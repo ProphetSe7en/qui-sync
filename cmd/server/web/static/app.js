@@ -163,6 +163,13 @@ function quiSyncApp() {
       this.loading.instances = true;
       try {
         this.instances = await this.apiFetch('/api/instances');
+        // Pre-init per-instance reactive keys for backup + export.
+        for (const inst of this.instances) {
+          const id = inst.qui_instance_id;
+          if (!(id in this.expandedBackup)) this.expandedBackup[id] = false;
+          if (!(id in this.backingUp)) this.backingUp[id] = false;
+          if (!(id in this.backupCounts)) this.backupCounts[id] = 0;
+        }
       } catch (e) {
         this.toast('error', 'Failed to load instances: ' + e.message);
       } finally {
