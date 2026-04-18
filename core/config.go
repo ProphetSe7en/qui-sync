@@ -130,9 +130,14 @@ type DataPaths struct {
 }
 
 // Paths derives the four canonical subdirectories from RepoDir.
-// If RepoDir is /data/repo, the sibling dirs are /data/state, etc.
+// If RepoDir is /data/repo, sibling dirs are /data/state, etc.
+// If RepoDir is a volume root like /data (old config, no /repo subdir),
+// subdirs go inside it instead of alongside — prevents writing to /.
 func (c *Config) Paths() DataPaths {
 	parent := filepath.Dir(c.RepoDir)
+	if parent == "/" || parent == "." {
+		parent = c.RepoDir
+	}
 	return DataPaths{
 		Repo:    c.RepoDir,
 		State:   filepath.Join(parent, "state"),
@@ -232,11 +237,13 @@ func DefaultStripFields() []string {
 		// Consumer-owned (user's local values — upstream must not dictate).
 		"trackerPattern",
 		"trackerDomains",
-		"intervalSeconds",
 		"freeSpaceSource",
 		"enabled",
 		"dryRun",
 		"notify",
+		// Note: intervalSeconds is intentionally preserved — it's part of
+		// the rule logic (how often Qui checks the rule). Consumers should
+		// get the maintainer's recommended interval.
 		// Note: sortOrder is intentionally preserved. It flows from Qui
 		// through qui-sync, can be overridden in the UI per rule, and
 		// ends up in the exported file so consumers get the maintainer's
