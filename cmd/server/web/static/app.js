@@ -43,11 +43,20 @@ function quiSyncApp() {
     hideDevBanner: localStorage.getItem('qui.hideDevBanner') === 'true',
     hideExportHelp: localStorage.getItem('qui.hideExportHelp') === 'true',
     hideSyncHelp: localStorage.getItem('qui.hideSyncHelp') === 'true',
+    hideBackupHelp: localStorage.getItem('qui.hideBackupHelp') === 'true',
+    expandedBackup: {},
+    backupList: {},      // instanceID -> [{id, timestamp, rule_count}]
+    backupCounts: {},    // instanceID -> count
+    backingUp: {},
+    restoringBackup: false,
     repoStatus: null,
     loadingRepoStatus: false,
     pushingRepo: false,
     pullingRepo: false,
     pushTokenDraft: '',
+    testingQui: false,
+    quiTestResult: '',  // '' | 'ok' | 'fail'
+    quiTestError: '',
     loading: { instances: false, export: false, config: false, changelog: false },
 
     init() {
@@ -57,6 +66,7 @@ function quiSyncApp() {
       this.loadChangelog();
       this.loadSubscriptions();
       this.loadRepoStatus();
+      this.loadBackups();
       setInterval(() => this.ping(), 30000);
     },
 
@@ -71,6 +81,7 @@ function quiSyncApp() {
     // Watch for help panel dismissals and persist via localStorage.
     dismissExportHelp() { this.hideExportHelp = true; localStorage.setItem('qui.hideExportHelp', 'true'); },
     dismissSyncHelp()   { this.hideSyncHelp = true;   localStorage.setItem('qui.hideSyncHelp', 'true'); },
+    dismissBackupHelp() { this.hideBackupHelp = true;  localStorage.setItem('qui.hideBackupHelp', 'true'); },
 
     // --- toasts ---
 
@@ -355,6 +366,21 @@ function quiSyncApp() {
       }
     },
 
+    async testQuiConnection() {
+      this.testingQui = true;
+      this.quiTestResult = '';
+      try {
+        const data = await this.apiFetch('/api/instances');
+        this.quiTestResult = 'ok';
+        this.toast('info', 'Connected to Qui — ' + data.length + ' instance' + (data.length === 1 ? '' : 's') + ' found.');
+      } catch (e) {
+        this.quiTestResult = 'fail';
+        this.quiTestError = '● ' + e.message;
+      } finally {
+        this.testingQui = false;
+      }
+    },
+
     resetQuiDraft() {
       if (!this.config) return;
       this.quiDraft = { url: this.config.qui.url || '', apiKey: '' };
@@ -427,6 +453,73 @@ function quiSyncApp() {
         this.toast('info', 'Instance added.');
       } catch (e) {
         this.toast('error', 'Add failed: ' + e.message);
+      }
+    },
+
+    // ============ Backup tab methods ============
+
+    toggleBackupInstance(id) {
+      this.expandedBackup[id] = !this.expandedBackup[id];
+      if (this.expandedBackup[id] && !this.backupList[id]) this.loadBackups();
+    },
+
+    async loadBackups() {
+      try {
+        const data = await this.apiFetch('/api/backups');
+        for (const inst of this.instances) {
+          const id = inst.qui_instance_id;
+          this.backupList[id] = data[id] || [];
+          this.backupCounts[id] = this.backupList[id].length;
+          // Pre-set restore target to same instance.
+          for (const bk of this.backupList[id]) {
+            if (!bk._restoreTarget) bk._restoreTarget = id;
+          }
+        }
+      } catch (e) {
+        this.toast('error', 'Load backups: ' + e.message);
+      }
+    },
+
+    async createBackup(inst) {
+      this.backingUp[inst.qui_instance_id] = true;
+      try {
+        const r = await this.apiFetch('/api/backup/' + inst.qui_instance_id, { method: 'POST' });
+        this.toast('info', 'Backup created: ' + r.rule_count + ' rules from ' + inst.qui_name);
+        await this.loadBackups();
+      } catch (e) {
+        this.toast('error', 'Backup failed: ' + e.message);
+      } finally {
+        this.backingUp[inst.qui_instance_id] = false;
+      }
+    },
+
+    async restoreBackup(sourceInstanceID, bk) {
+      const target = this.instances.find((i) => i.qui_instance_id === bk._restoreTarget);
+      const ok = await this.confirm({
+        title: 'Restore backup?',
+        body: 'Restore ' + bk.rule_count + ' rules from backup ' + bk.timestamp +
+              ' to ' + (target ? target.qui_name : 'instance #' + bk._restoreTarget) +
+              '? Existing rules with matching names will be overwritten. New rules will be created.',
+        confirmLabel: 'Restore',
+      });
+      if (!ok) return;
+      this.restoringBackup = true;
+      try {
+        const r = await this.apiFetch('/api/backup/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            instance_id: sourceInstanceID,
+            timestamp: bk.timestamp,
+            target_instance_id: bk._restoreTarget,
+          }),
+        });
+        this.toast('info', 'Restored: ' + r.created + ' created, ' + r.updated + ' updated' +
+                  (r.failed ? ', ' + r.failed + ' failed' : ''));
+      } catch (e) {
+        this.toast('error', 'Restore failed: ' + e.message);
+      } finally {
+        this.restoringBackup = false;
       }
     },
 

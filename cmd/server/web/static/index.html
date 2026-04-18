@@ -18,6 +18,7 @@
   <div class="tabs">
     <div class="tab" :class="tab==='export'   && 'active'" @click="setTab('export')">Export</div>
     <div class="tab" :class="tab==='sync'     && 'active'" @click="setTab('sync')">Sync</div>
+    <div class="tab" :class="tab==='backup'   && 'active'" @click="setTab('backup')">Backup</div>
     <div class="tab" :class="tab==='settings' && 'active'" @click="setTab('settings')">Settings</div>
   </div>
   <div class="right">
@@ -45,7 +46,9 @@
           <b>1.</b> Expand an instance below to see its rules — exclude any you don't want to share.
           <b>2.</b> Set the priority (sort order) for each rule — this is the order consumers will get them in.
           <b>3.</b> Click <b>Preview</b> to see what would change, then <b>Commit export</b> to write files + auto-commit to git.
-          <b>4.</b> Push to GitHub when ready: <code>git push</code> from terminal (or use a git UI).
+          <b>4.</b> Use the Share-repo panel below to push to GitHub.
+          <br><br>
+          <b>Safe for sharing:</b> Your personal tracker lists are automatically replaced with placeholders. Rules using <code>*</code> (all trackers) keep the wildcard. Fields like <code>enabled</code>, <code>dryRun</code>, and <code>notify</code> are stripped — consumers set those themselves.
         </div>
         <button class="btn btn-sm" @click="dismissExportHelp()" title="Hide this help">✕</button>
       </div>
@@ -357,6 +360,95 @@
     </div>
   </section>
 
+  <!-- BACKUP TAB -->
+  <section x-show="tab==='backup'">
+    <h1 class="page-title">Backup & Restore</h1>
+    <p class="page-subtitle">Full 1:1 backup of all automations per Qui instance — including trackers, enabled state, and everything else. No stripping, no placeholders.</p>
+
+    <div class="panel help-panel" x-show="!hideBackupHelp">
+      <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
+        <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
+          <b>How it works:</b>
+          <b>1.</b> Click <b>Backup now</b> on an instance to snapshot all its automations.
+          <b>2.</b> Backups are stored per instance with timestamp — each is a complete snapshot.
+          <b>3.</b> To restore, expand the instance, select a backup, choose the target instance, and click <b>Restore</b>.
+          <b>4.</b> Restore creates the rules in Qui exactly as they were — trackers, enabled state, intervals, everything.
+        </div>
+        <button class="btn btn-sm" @click="dismissBackupHelp()" title="Hide this help">✕</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Instances</div>
+        <button class="btn" @click="loadBackups()">Refresh</button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <template x-if="instances.length === 0">
+          <div class="empty">No Qui instances configured. Go to Settings first.</div>
+        </template>
+
+        <template x-for="inst in instances" :key="'bk-' + inst.qui_instance_id">
+          <div class="instance-row">
+            <div class="instance-head" style="display:flex; align-items:center; gap:12px; padding:12px 16px; cursor:pointer"
+                 @click="toggleBackupInstance(inst.qui_instance_id)">
+              <span class="chev" :class="expandedBackup[inst.qui_instance_id] && 'chev-open'">▸</span>
+              <span style="font-weight:500" x-text="inst.qui_name"></span>
+              <span class="badge badge-blue" x-text="'#' + inst.qui_instance_id"></span>
+              <span class="dim" x-text="inst.rule_count + ' rules'"></span>
+              <span class="dim" style="font-size:var(--font-xs)"
+                    x-show="backupCounts[inst.qui_instance_id]"
+                    x-text="backupCounts[inst.qui_instance_id] + ' backup' + (backupCounts[inst.qui_instance_id] === 1 ? '' : 's')"></span>
+              <span style="margin-left:auto">
+                <button class="btn btn-sm btn-primary" @click.stop="createBackup(inst)"
+                        :disabled="backingUp[inst.qui_instance_id]">Backup now</button>
+              </span>
+            </div>
+
+            <div class="instance-body" x-show="expandedBackup[inst.qui_instance_id]" x-transition>
+              <template x-if="!backupList[inst.qui_instance_id] || backupList[inst.qui_instance_id].length === 0">
+                <div class="empty" style="padding:16px">No backups yet for this instance.</div>
+              </template>
+              <template x-if="backupList[inst.qui_instance_id] && backupList[inst.qui_instance_id].length > 0">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Timestamp</th>
+                      <th>Rules</th>
+                      <th style="width:260px">Restore to</th>
+                      <th style="width:100px"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="bk in backupList[inst.qui_instance_id]" :key="bk.id">
+                      <tr>
+                        <td x-text="bk.timestamp"></td>
+                        <td x-text="bk.rule_count + ' rules'"></td>
+                        <td>
+                          <select class="input" style="width:100%; font-size:var(--font-xs)"
+                                  x-model.number="bk._restoreTarget">
+                            <template x-for="ri in instances" :key="'rt-' + ri.qui_instance_id">
+                              <option :value="ri.qui_instance_id"
+                                      x-text="ri.qui_name + ' (#' + ri.qui_instance_id + ')'"></option>
+                            </template>
+                          </select>
+                        </td>
+                        <td>
+                          <button class="btn btn-sm" @click="restoreBackup(inst.qui_instance_id, bk)"
+                                  :disabled="!bk._restoreTarget || restoringBackup">Restore</button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>
+
   <!-- SETTINGS TAB -->
   <section x-show="tab==='settings'">
     <h1 class="page-title">Settings</h1>
@@ -409,9 +501,12 @@
             </div>
           </div>
         </div>
-        <div style="margin-top:12px; display:flex; gap:8px">
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center">
           <button class="btn btn-primary" @click="saveQuiConfig()" :disabled="loading.config">Save</button>
           <button class="btn" @click="resetQuiDraft()">Reset</button>
+          <button class="btn" @click="testQuiConnection()" :disabled="testingQui">Test connection</button>
+          <span x-show="quiTestResult === 'ok'" style="color:var(--accent-green); font-size:var(--font-sm)">● Connected</span>
+          <span x-show="quiTestResult === 'fail'" style="color:var(--accent-red); font-size:var(--font-sm)" x-text="quiTestError"></span>
         </div>
       </div>
     </div>

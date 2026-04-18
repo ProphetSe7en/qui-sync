@@ -142,6 +142,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{slug}/apply", s.handleApplySubscription)
 	mux.HandleFunc("POST /api/subscriptions/generate-key", s.handleGenerateKey)
 	mux.HandleFunc("GET /api/instances/{id}/qui-rules", s.handleListQuiRules)
+
+	// Backup & Restore.
+	mux.HandleFunc("POST /api/backup/{id}", s.handleCreateBackup)
+	mux.HandleFunc("GET /api/backups", s.handleListBackups)
+	mux.HandleFunc("POST /api/backup/restore", s.handleRestoreBackup)
 	mux.HandleFunc("PUT /api/subscriptions/{slug}/rules/auto-sync", s.handleSetRuleAutoSync)
 	mux.HandleFunc("PUT /api/config/auto-pull-interval", s.handleSetAutoPullInterval)
 	mux.HandleFunc("PUT /api/config/push-token", s.handleSavePushToken)
