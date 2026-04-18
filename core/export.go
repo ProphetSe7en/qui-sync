@@ -22,12 +22,13 @@ type ExportDiff struct {
 }
 
 type DiffEntry struct {
-	Slug        string
-	Category    string
-	Name        string
-	OldName     string // for Renamed entries
-	OldCategory string // for Moved entries
-	QuiID       int
+	Slug          string
+	Category      string
+	Name          string
+	OldName       string // for Renamed entries
+	OldCategory   string // for Moved entries
+	QuiID         int
+	ChangedFields []string `json:"changed_fields,omitempty"` // for Updated: which top-level JSON keys differ
 }
 
 // Empty returns true if nothing changed.
@@ -160,6 +161,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 				if !(renamed && jsonEqualExceptName(existing, fileJSON)) {
 					diff.Updated = append(diff.Updated, DiffEntry{
 						Slug: slug, Category: inst.Category, Name: r.Name, QuiID: r.ID,
+						ChangedFields: computeChangedFields(existing, fileJSON),
 					})
 				}
 			} else if !exists && oldPath == "" {
@@ -292,6 +294,18 @@ func buildRuleFile(r Automation, slug string, cfg *Config, sortOrder int) ([]byt
 
 	// Always set the effective sortOrder (user override or Qui's value).
 	obj["sortOrder"] = sortOrder
+
+	// Replace real tracker values with placeholders for sharing.
+	// Trackers with "*" (all) are kept as-is — they're not personal.
+	if tp, ok := obj["trackerPattern"].(string); ok && tp != "" && tp != "*" {
+		obj["trackerPattern"] = "tracker_1"
+	}
+	if td, ok := obj["trackerDomains"].([]any); ok && len(td) > 0 {
+		isWildcard := len(td) == 1 && td[0] == "*"
+		if !isWildcard {
+			obj["trackerDomains"] = []string{"tracker.xyz"}
+		}
+	}
 
 	// Build an ordered output with stable key ordering.
 	out := map[string]any{
@@ -436,6 +450,40 @@ func CleanBackups(backupsDir string, retentionDays int) (int, error) {
 		}
 	}
 	return count, nil
+}
+
+// computeChangedFields returns which top-level JSON keys differ between
+// two rule files. Used to give the user context on what changed.
+func computeChangedFields(oldJSON, newJSON []byte) []string {
+	var oldMap, newMap map[string]any
+	if json.Unmarshal(oldJSON, &oldMap) != nil || json.Unmarshal(newJSON, &newMap) != nil {
+		return nil
+	}
+	// Check all keys in both maps.
+	allKeys := map[string]bool{}
+	for k := range oldMap {
+		allKeys[k] = true
+	}
+	for k := range newMap {
+		allKeys[k] = true
+	}
+	var changed []string
+	for k := range allKeys {
+		if k == "_slug" || k == "_description" {
+			continue // internal fields, not interesting to user
+		}
+		oldVal, oldOk := oldMap[k]
+		newVal, newOk := newMap[k]
+		if !oldOk && newOk {
+			changed = append(changed, "+"+k)
+		} else if oldOk && !newOk {
+			changed = append(changed, "-"+k)
+		} else if !deepEqualJSON(oldVal, newVal) {
+			changed = append(changed, k)
+		}
+	}
+	sort.Strings(changed)
+	return changed
 }
 
 func sortDiffSlices(d *ExportDiff) {

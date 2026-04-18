@@ -230,7 +230,12 @@
               <div class="diff-update" style="font-weight:600">~ <span x-text="diff.updated.length"></span> updated</div>
               <ul>
                 <template x-for="e in diff.updated" :key="e.QuiID">
-                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>
+                  <li>
+                    <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
+                    <span x-show="e.changed_fields && e.changed_fields.length"
+                          class="dim" style="font-size:var(--font-xs); margin-left:6px"
+                          x-text="'(' + (e.changed_fields || []).join(', ') + ')'"></span>
+                  </li>
                 </template>
               </ul>
             </div>
@@ -295,10 +300,20 @@
                    x-text="'Remote: ' + repoStatus.status.remote_url"></div>
             </div>
             <div style="display:flex; gap:8px; align-items:center">
+              <button class="btn" @click="pullRepo()"
+                      :disabled="!repoStatus.push_configured || repoStatus.status.behind === 0 || pullingRepo"
+                      title="Pull latest changes from remote (e.g. merged PRs)">
+                Pull from remote
+              </button>
               <button class="btn btn-primary" @click="pushRepo()"
                       :disabled="!repoStatus.push_configured || repoStatus.status.ahead === 0 || pushingRepo"
                       title="Push all committed changes to the remote git repo">
                 Push to remote
+              </button>
+              <button class="btn" @click="applyToQui()"
+                      :disabled="!repoStatus.push_configured"
+                      title="Apply local file changes (from PRs, edits) back into Qui. Uses the same merge that preserves your trackers.">
+                Apply to Qui
               </button>
               <span class="dim" style="font-size:var(--font-xs)"
                     x-show="!repoStatus.push_configured">

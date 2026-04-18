@@ -235,8 +235,9 @@ func DefaultStripFields() []string {
 		"createdAt",
 		"updatedAt",
 		// Consumer-owned (user's local values — upstream must not dictate).
-		"trackerPattern",
-		"trackerDomains",
+		// trackerPattern and trackerDomains are NOT stripped — they're replaced
+		// with placeholders ("tracker_1" / ["tracker.xyz"]) in buildRuleFile
+		// so consumers know the fields exist. Wildcard "*" is preserved as-is.
 		"freeSpaceSource",
 		"enabled",
 		"dryRun",

@@ -126,6 +126,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/changelog", s.handleChangelog)
 	mux.HandleFunc("GET /api/repo/status", s.handleRepoStatus)
 	mux.HandleFunc("POST /api/repo/push", s.handleRepoPush)
+	mux.HandleFunc("POST /api/repo/pull", s.handleRepoPull)
+	mux.HandleFunc("POST /api/repo/apply-to-qui", s.handleApplyToQui)
 	mux.HandleFunc("PUT /api/excludes", s.handleSetExclude)
 	mux.HandleFunc("PUT /api/excludes/instance", s.handleSetInstanceExclude)
 	mux.HandleFunc("PUT /api/instances/{id}/category", s.handleRenameCategory)

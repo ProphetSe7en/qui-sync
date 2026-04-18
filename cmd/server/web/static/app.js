@@ -46,6 +46,7 @@ function quiSyncApp() {
     repoStatus: null,
     loadingRepoStatus: false,
     pushingRepo: false,
+    pullingRepo: false,
     pushTokenDraft: '',
     loading: { instances: false, export: false, config: false, changelog: false },
 
@@ -751,6 +752,30 @@ function quiSyncApp() {
         this.toast('error', 'Repo status: ' + e.message);
       } finally {
         this.loadingRepoStatus = false;
+      }
+    },
+
+    async applyToQui() {
+      try {
+        await this.apiFetch('/api/repo/apply-to-qui', { method: 'POST' });
+        this.toast('info', 'Local repo linked. Switch to the Sync tab → expand "__local__" → select instance → Plan → Apply.');
+        this.setTab('sync');
+        await this.loadSubscriptions();
+      } catch (e) {
+        this.toast('error', 'Apply setup failed: ' + e.message);
+      }
+    },
+
+    async pullRepo() {
+      this.pullingRepo = true;
+      try {
+        await this.apiFetch('/api/repo/pull', { method: 'POST' });
+        await this.loadRepoStatus();
+        this.toast('info', 'Pulled latest from remote.');
+      } catch (e) {
+        this.toast('error', 'Pull failed: ' + e.message);
+      } finally {
+        this.pullingRepo = false;
       }
     },
 

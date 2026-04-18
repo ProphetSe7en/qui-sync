@@ -237,6 +237,37 @@ func GetRepoStatus(ctx context.Context, repoDir string) (*RepoStatus, error) {
 	return status, nil
 }
 
+// PullRepo pulls latest from origin for the current branch. Uses PAT for auth.
+func PullRepo(ctx context.Context, repoDir, token string) error {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return fmt.Errorf("not a git repo: %s", repoDir)
+	}
+	originURL, err := runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return fmt.Errorf("read origin url: %w", err)
+	}
+	originURL = strings.TrimSpace(originURL)
+
+	auth := GitAuth{Mode: GitAuthToken, Token: token}
+	effectiveURL, env, err := prepareAuth(originURL, auth)
+	if err != nil {
+		return err
+	}
+
+	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	branch = strings.TrimSpace(branch)
+
+	if _, err := runGit(ctx, repoDir, env,
+		"-c", "remote.origin.url="+effectiveURL,
+		"pull", "--ff-only", "origin", branch); err != nil {
+		return fmt.Errorf("pull: %w", err)
+	}
+	return nil
+}
+
 // RepoDiffSummary returns a human-readable summary of what would be pushed.
 func RepoDiffSummary(ctx context.Context, repoDir string) (string, error) {
 	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")

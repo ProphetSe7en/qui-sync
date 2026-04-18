@@ -818,6 +818,57 @@ func (s *Server) handleRepoStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleApplyToQui is a convenience endpoint that creates a temporary
+// subscription pointing at the local repo (/data/repo) and runs
+// Plan+Apply through the normal Sync engine. This gives maintainers
+// a "reverse export" flow: edit files → Apply to Qui, with the same
+// 3-layer merge that preserves trackers and user-owned fields.
+func (s *Server) handleApplyToQui(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	state := s.getConsumerState()
+	repoDir := cfg.Paths().Repo
+
+	// Ensure a __local__ subscription exists pointing at the repo dir.
+	const localSlug = "__local__"
+	if state.SubscriptionSnapshot(localSlug) == nil {
+		_ = state.AddSubscription(localSlug, repoDir, "HEAD", core.SubscriptionAuth{Mode: core.GitAuthPublic})
+		_ = state.Save(cfg.Paths().State)
+	}
+
+	// Create a symlink from the expected clone dir to the actual repo
+	// so PlanSync can find the rules without a real git clone.
+	sourcesDir := cfg.Paths().Sources
+	linkPath := core.SubscriptionCloneDir(sourcesDir, localSlug)
+	_ = os.MkdirAll(sourcesDir, 0o755)
+	_ = os.RemoveAll(linkPath)
+	if err := os.Symlink(repoDir, linkPath); err != nil {
+		writeErr(w, 500, fmt.Errorf("symlink local repo: %w", err))
+		return
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"status":  "ready",
+		"slug":    localSlug,
+		"message": "Local repo linked. Use the Sync tab to Plan and Apply against a Qui instance.",
+	})
+}
+
+func (s *Server) handleRepoPull(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		writeErr(w, 400, fmt.Errorf("push token not configured — needed for pull too (same auth)"))
+		return
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	if err := core.PullRepo(r.Context(), cfg.Paths().Repo, token); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "pulled"})
+}
+
 func (s *Server) handleRepoPush(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getConfig()
 	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
