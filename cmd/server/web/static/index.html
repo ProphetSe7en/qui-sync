@@ -269,6 +269,63 @@
 
     <div class="panel">
       <div class="panel-header">
+        <div class="panel-title">Share-repo</div>
+        <button class="btn" @click="loadRepoStatus()" :disabled="loadingRepoStatus">Refresh</button>
+      </div>
+      <div class="panel-body">
+        <template x-if="repoStatus">
+          <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap">
+            <div style="flex:1; min-width:200px">
+              <div style="font-size:var(--font-sm)">
+                <template x-if="repoStatus.status.ahead === 0 && repoStatus.status.behind === 0">
+                  <span><span class="dot dot-ok"></span>In sync with remote</span>
+                </template>
+                <template x-if="repoStatus.status.ahead > 0">
+                  <span><span class="dot dot-warn"></span><b x-text="repoStatus.status.ahead"></b> commit<span x-show="repoStatus.status.ahead !== 1">s</span> ahead of remote — ready to push</span>
+                </template>
+                <template x-if="repoStatus.status.behind > 0">
+                  <span class="diff-remove"><span class="dot dot-err"></span><b x-text="repoStatus.status.behind"></b> behind remote</span>
+                </template>
+              </div>
+              <div class="dim" style="font-size:var(--font-xs); margin-top:4px"
+                   x-show="repoStatus.status.last_commit"
+                   x-text="'Last: ' + repoStatus.status.last_commit"></div>
+              <div class="dim" style="font-size:var(--font-xs); margin-top:2px"
+                   x-show="repoStatus.status.remote_url"
+                   x-text="'Remote: ' + repoStatus.status.remote_url"></div>
+            </div>
+            <div style="display:flex; gap:8px; align-items:center">
+              <button class="btn btn-primary" @click="pushRepo()"
+                      :disabled="!repoStatus.push_configured || repoStatus.status.ahead === 0 || pushingRepo"
+                      title="Push all committed changes to the remote git repo">
+                Push to remote
+              </button>
+              <span class="dim" style="font-size:var(--font-xs)"
+                    x-show="!repoStatus.push_configured">
+                Add push token in Settings to enable
+              </span>
+            </div>
+            <template x-if="repoStatus.diff_summary">
+              <pre style="width:100%; margin-top:12px; background:var(--bg-base); padding:10px;
+                          border-radius:var(--radius); font-family:var(--font-mono);
+                          font-size:var(--font-xs); color:var(--text-secondary);
+                          white-space:pre-wrap; max-height:200px; overflow:auto"
+                   x-text="repoStatus.diff_summary"></pre>
+            </template>
+            </div>
+          </div>
+        </template>
+        <template x-if="!repoStatus && !loadingRepoStatus">
+          <div class="dim" style="font-size:var(--font-sm)">Click Refresh to check repo status.</div>
+        </template>
+        <template x-if="loadingRepoStatus">
+          <div class="dim" style="font-size:var(--font-sm)">Checking...</div>
+        </template>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
         <div class="panel-title">Changelog</div>
         <button class="btn" @click="loadChangelog()" :disabled="loading.changelog">Refresh</button>
       </div>
@@ -393,6 +450,29 @@
         <div style="margin-top:12px; display:flex; gap:8px">
           <button class="btn btn-primary" @click="saveBackupConfig()">Save</button>
           <button class="btn" @click="resetBackupDraft()">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Git push</div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <label>Push token</label>
+          <div>
+            <input class="input" type="password" x-model="pushTokenDraft"
+                   placeholder="GitHub PAT for pushing your share-repo"
+                   autocomplete="new-password" data-1p-ignore data-lpignore="true">
+            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
+              Stored at <code>/config/git-push-token</code> (0600). Used by the Push button in the Export tab.
+              Create a <b>fine-grained PAT</b> with Contents: Read+Write on your share-repo.
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px">
+          <button class="btn btn-primary" @click="savePushToken()">Save</button>
         </div>
       </div>
     </div>

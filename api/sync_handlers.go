@@ -380,6 +380,30 @@ func (s *Server) handleSetAutoPullInterval(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, 200, map[string]string{"interval": req.Interval})
 }
 
+// ---- push token ----
+
+type pushTokenReq struct {
+	Token string `json:"token"`
+}
+
+func (s *Server) handleSavePushToken(w http.ResponseWriter, r *http.Request) {
+	var req pushTokenReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.Token == "" {
+		writeErr(w, 400, fmt.Errorf("token is required"))
+		return
+	}
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	if err := os.WriteFile(tokenPath, []byte(req.Token+"\n"), 0o600); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "saved"})
+}
+
 // ---- helper for the UI's link-to-existing dropdown ----
 
 type quiRuleBrief struct {

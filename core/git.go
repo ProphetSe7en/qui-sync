@@ -167,6 +167,124 @@ func runGitSilent(ctx context.Context, dir string, env []string, args ...string)
 	return err
 }
 
+// RepoStatus returns the sync state of a git repo against its remote.
+type RepoStatus struct {
+	Clean        bool   `json:"clean"`          // no uncommitted changes
+	Ahead        int    `json:"ahead"`          // commits ahead of origin
+	Behind       int    `json:"behind"`         // commits behind origin
+	LastCommit   string `json:"last_commit"`    // short message of HEAD
+	LastCommitAt string `json:"last_commit_at"` // date of HEAD
+	RemoteURL    string `json:"remote_url"`     // origin URL (token stripped)
+	Branch       string `json:"branch"`         // current branch
+}
+
+// GetRepoStatus checks the git repo's state relative to origin.
+func GetRepoStatus(ctx context.Context, repoDir string) (*RepoStatus, error) {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return &RepoStatus{}, nil // not a git repo yet
+	}
+
+	status := &RepoStatus{}
+
+	// Clean?
+	out, err := runGit(ctx, repoDir, nil, "status", "--porcelain")
+	if err == nil {
+		status.Clean = strings.TrimSpace(out) == ""
+	}
+
+	// Branch
+	out, err = runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")
+	if err == nil {
+		status.Branch = strings.TrimSpace(out)
+	}
+
+	// Fetch to know ahead/behind (best-effort, may fail without auth)
+	_ = runGitSilent(ctx, repoDir, nil, "fetch", "--quiet", "origin")
+
+	// Ahead
+	out, err = runGit(ctx, repoDir, nil, "rev-list", "--count", "origin/"+status.Branch+"..HEAD")
+	if err == nil {
+		fmt.Sscanf(strings.TrimSpace(out), "%d", &status.Ahead)
+	}
+
+	// Behind
+	out, err = runGit(ctx, repoDir, nil, "rev-list", "--count", "HEAD..origin/"+status.Branch)
+	if err == nil {
+		fmt.Sscanf(strings.TrimSpace(out), "%d", &status.Behind)
+	}
+
+	// Last commit
+	out, err = runGit(ctx, repoDir, nil, "log", "-1", "--format=%s")
+	if err == nil {
+		status.LastCommit = strings.TrimSpace(out)
+	}
+	out, err = runGit(ctx, repoDir, nil, "log", "-1", "--format=%ci")
+	if err == nil {
+		status.LastCommitAt = strings.TrimSpace(out)
+	}
+
+	// Remote URL (strip embedded tokens)
+	out, err = runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
+	if err == nil {
+		u := strings.TrimSpace(out)
+		if parsed, err := url.Parse(u); err == nil && parsed.User != nil {
+			parsed.User = nil
+			u = parsed.String()
+		}
+		status.RemoteURL = u
+	}
+
+	return status, nil
+}
+
+// RepoDiffSummary returns a human-readable summary of what would be pushed.
+func RepoDiffSummary(ctx context.Context, repoDir string) (string, error) {
+	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	branch = strings.TrimSpace(branch)
+	out, err := runGit(ctx, repoDir, nil, "diff", "--stat", "origin/"+branch+"..HEAD")
+	if err != nil {
+		return "(could not compute diff)", nil
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// PushRepo pushes the current branch to origin using a PAT for auth.
+func PushRepo(ctx context.Context, repoDir, token string) error {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return fmt.Errorf("not a git repo: %s", repoDir)
+	}
+
+	// Read the remote URL + inject token for this push only
+	originURL, err := runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return fmt.Errorf("read origin url: %w", err)
+	}
+	originURL = strings.TrimSpace(originURL)
+
+	auth := GitAuth{Mode: GitAuthToken, Token: token}
+	effectiveURL, env, err := prepareAuth(originURL, auth)
+	if err != nil {
+		return err
+	}
+
+	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return err
+	}
+	branch = strings.TrimSpace(branch)
+
+	_, err = runGit(ctx, repoDir, env,
+		"-c", "remote.origin.url="+effectiveURL,
+		"push", "origin", branch)
+	if err != nil {
+		return fmt.Errorf("push: %w", err)
+	}
+	return nil
+}
+
 // ---- internals ----
 
 // prepareAuth rewrites the URL (for token mode) and builds env overrides

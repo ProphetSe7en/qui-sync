@@ -43,6 +43,10 @@ function quiSyncApp() {
     hideDevBanner: localStorage.getItem('qui.hideDevBanner') === 'true',
     hideExportHelp: localStorage.getItem('qui.hideExportHelp') === 'true',
     hideSyncHelp: localStorage.getItem('qui.hideSyncHelp') === 'true',
+    repoStatus: null,
+    loadingRepoStatus: false,
+    pushingRepo: false,
+    pushTokenDraft: '',
     loading: { instances: false, export: false, config: false, changelog: false },
 
     init() {
@@ -51,6 +55,7 @@ function quiSyncApp() {
       this.loadConfig();
       this.loadChangelog();
       this.loadSubscriptions();
+      this.loadRepoStatus();
       setInterval(() => this.ping(), 30000);
     },
 
@@ -738,6 +743,55 @@ function quiSyncApp() {
       }
     },
 
+    async loadRepoStatus() {
+      this.loadingRepoStatus = true;
+      try {
+        this.repoStatus = await this.apiFetch('/api/repo/status');
+      } catch (e) {
+        this.toast('error', 'Repo status: ' + e.message);
+      } finally {
+        this.loadingRepoStatus = false;
+      }
+    },
+
+    async pushRepo() {
+      const ok = await this.confirm({
+        title: 'Push to remote?',
+        body: 'Push all committed changes in your share-repo to the remote git repository. This makes your exported rules available for others to sync.',
+        confirmLabel: 'Push',
+      });
+      if (!ok) return;
+      this.pushingRepo = true;
+      try {
+        await this.apiFetch('/api/repo/push', { method: 'POST' });
+        await this.loadRepoStatus();
+        this.toast('info', 'Pushed to remote.');
+      } catch (e) {
+        this.toast('error', 'Push failed: ' + e.message);
+      } finally {
+        this.pushingRepo = false;
+      }
+    },
+
+    async savePushToken() {
+      if (!this.pushTokenDraft) {
+        this.toast('error', 'Token is required');
+        return;
+      }
+      try {
+        await this.apiFetch('/api/config/push-token', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: this.pushTokenDraft }),
+        });
+        this.pushTokenDraft = '';
+        this.toast('info', 'Push token saved.');
+        await this.loadRepoStatus();
+      } catch (e) {
+        this.toast('error', 'Save failed: ' + e.message);
+      }
+    },
+
     async loadChangelog() {
       this.loading.changelog = true;
       try {
@@ -773,6 +827,7 @@ function quiSyncApp() {
       try {
         this.diff = await this.apiFetch('/api/export/run', { method: 'POST' });
         await this.loadChangelog();
+        await this.loadRepoStatus();
         if (this.diff.empty) {
           this.toast('info', 'Nothing to commit — local rules already in sync with Qui.');
         } else {

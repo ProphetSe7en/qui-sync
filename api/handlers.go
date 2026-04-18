@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -790,6 +791,51 @@ func (s *Server) handleChangelog(w http.ResponseWriter, r *http.Request) {
 		"content":  string(data),
 		"modified": modTime,
 	})
+}
+
+// ---- repo status + push ----
+
+func (s *Server) handleRepoStatus(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	status, err := core.GetRepoStatus(r.Context(), cfg.Paths().Repo)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	_, tokenErr := os.Stat(tokenPath)
+
+	// Get diff summary so user sees what would be pushed
+	diffSummary := ""
+	if status.Ahead > 0 {
+		diffSummary, _ = core.RepoDiffSummary(r.Context(), cfg.Paths().Repo)
+	}
+
+	writeJSON(w, 200, map[string]any{
+		"status":          status,
+		"push_configured": tokenErr == nil,
+		"diff_summary":    diffSummary,
+	})
+}
+
+func (s *Server) handleRepoPush(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		writeErr(w, 400, fmt.Errorf("push token not configured — create /config/git-push-token with your GitHub PAT, or paste it in Settings"))
+		return
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	if token == "" {
+		writeErr(w, 400, fmt.Errorf("git-push-token file is empty"))
+		return
+	}
+	if err := core.PushRepo(r.Context(), cfg.Paths().Repo, token); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "pushed"})
 }
 
 // ---- helpers ----
