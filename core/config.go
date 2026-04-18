@@ -104,7 +104,7 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.Mode = "maintainer"
 	}
 	if cfg.RepoDir == "" {
-		cfg.RepoDir = "/data"
+		cfg.RepoDir = "/data/repo"
 	}
 
 	return &cfg, nil
@@ -115,8 +115,29 @@ func LoadConfig(path string) (*Config, error) {
 func defaultConfig(path string) *Config {
 	return &Config{
 		Mode:    "maintainer",
-		RepoDir: "/data",
+		RepoDir: "/data/repo",
 		Backup:  BackupConfig{RetentionDays: 90, Gitignored: true},
+	}
+}
+
+// DataPaths computes the canonical subdirectory layout under the data volume.
+// RepoDir is the git share-repo (push this). Everything else is local-only.
+type DataPaths struct {
+	Repo    string // /data/repo — the git share-repo
+	State   string // /data/state — maintainer + consumer state
+	Backups string // /data/backups — archived rule versions
+	Sources string // /data/sources — sync subscription clones
+}
+
+// Paths derives the four canonical subdirectories from RepoDir.
+// If RepoDir is /data/repo, the sibling dirs are /data/state, etc.
+func (c *Config) Paths() DataPaths {
+	parent := filepath.Dir(c.RepoDir)
+	return DataPaths{
+		Repo:    c.RepoDir,
+		State:   filepath.Join(parent, "state"),
+		Backups: filepath.Join(parent, "backups"),
+		Sources: filepath.Join(parent, "sources"),
 	}
 }
 

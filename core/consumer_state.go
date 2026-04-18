@@ -88,8 +88,8 @@ func DefaultPreservedFields() []string {
 	}
 }
 
-func consumerStatePath(repoDir string) string {
-	return filepath.Join(repoDir, ".qui-sync", "consumer.state.json")
+func consumerStatePath(stateDir string) string {
+	return filepath.Join(stateDir, "consumer.state.json")
 }
 
 // LoadConsumerState reads consumer.state.json. Returns an empty state

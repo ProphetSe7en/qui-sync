@@ -335,6 +335,6 @@ func (s *MaintainerState) RulesSnapshot(quiInstanceID int) map[string]RuleStateE
 	return out
 }
 
-func maintainerStatePath(repoDir string) string {
-	return filepath.Join(repoDir, ".qui-sync", "maintainer.state.json")
+func maintainerStatePath(stateDir string) string {
+	return filepath.Join(stateDir, "maintainer.state.json")
 }

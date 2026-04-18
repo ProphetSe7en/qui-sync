@@ -41,7 +41,7 @@ type Server struct {
 type Middleware func(http.Handler) http.Handler
 
 func NewServer(cfgPath string, cfg *core.Config, staticFS fs.FS, version string) (*Server, error) {
-	consumerState, err := core.LoadConsumerState(cfg.RepoDir)
+	consumerState, err := core.LoadConsumerState(cfg.Paths().State)
 	if err != nil {
 		return nil, err
 	}

@@ -43,9 +43,11 @@ qui:
 
 # REQUIRED: where the share-repo lives on disk.
 # Exported rule files are written under <repo_dir>/rules/<category>/.
-# State is kept in <repo_dir>/.qui-sync/maintainer.state.json.
-# Backups go in <repo_dir>/backup/.
-repo_dir: /data
+# State, backups, and sync clones live as siblings of repo_dir:
+#   /data/state/    — maintainer + consumer state (never pushed)
+#   /data/backups/  — archived old rule versions (never pushed)
+#   /data/sources/  — sync subscription clones (never pushed)
+repo_dir: /data/repo
 
 # REQUIRED: which Qui instances to export, and which category folder each maps to.
 # Each instance becomes a subfolder of <repo_dir>/rules/.
@@ -95,7 +97,7 @@ export_instances:
 #     /mnt/user/downloads/qbit/: /downloads/
 
 # OPTIONAL: backup — controls how previous versions of changed/removed rules
-# are archived in <repo_dir>/backup/.
+# are archived in the sibling /data/backups/ directory.
 backup:
   # Delete backup files older than this many days when `qui-sync clean-backups`
   # runs. 0 disables cleanup. Default: 0.

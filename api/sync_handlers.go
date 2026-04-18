@@ -58,7 +58,7 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 			RuleCount:   len(sub.Rules),
 		}
 		// Count rules in the cloned repo on disk (if pulled).
-		cloneDir := core.SubscriptionCloneDir(cfg.RepoDir, slug)
+		cloneDir := core.SubscriptionCloneDir(cfg.Paths().Sources, slug)
 		if entries, err := os.ReadDir(filepath.Join(cloneDir, "rules")); err == nil {
 			for _, cat := range entries {
 				if !cat.IsDir() {
@@ -150,7 +150,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -165,13 +165,13 @@ func (s *Server) handleRemoveSubscription(w http.ResponseWriter, r *http.Request
 		writeErr(w, 404, fmt.Errorf("subscription %q not found", slug))
 		return
 	}
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	// Best-effort cleanup of clone + auth files. Failures here don't
 	// block the removal — user can rm manually if needed.
-	_ = os.RemoveAll(core.SubscriptionCloneDir(cfg.RepoDir, slug))
+	_ = os.RemoveAll(core.SubscriptionCloneDir(cfg.Paths().Sources, slug))
 	_ = os.RemoveAll(s.gitKeyDir(slug))
 
 	writeJSON(w, 200, map[string]any{"removed": slug})
@@ -221,7 +221,7 @@ func (s *Server) handlePlanSubscription(w http.ResponseWriter, r *http.Request) 
 	// Persist the target instance so auto-sync knows where to apply.
 	sub := state.Subscription(slug)
 	sub.TargetInstanceID = req.QuiInstanceID
-	_ = state.Save(cfg.RepoDir)
+	_ = state.Save(cfg.Paths().State)
 	writeJSON(w, 200, plan)
 }
 
@@ -343,7 +343,7 @@ func (s *Server) handleSetRuleAutoSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rule.AutoSync = req.AutoSync
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}

@@ -91,7 +91,7 @@ func (s *Server) handleListInstances(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -193,7 +193,7 @@ func (s *Server) handleInstanceRules(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 502, err)
 		return
 	}
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -496,8 +496,8 @@ func (s *Server) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Move on-disk folder if it exists. We do this before mutating state
 	// so a filesystem error aborts cleanly.
-	oldDir := filepath.Join(cfg.RepoDir, "rules", oldCat)
-	newDir := filepath.Join(cfg.RepoDir, "rules", newCat)
+	oldDir := filepath.Join(cfg.Paths().Repo, "rules", oldCat)
+	newDir := filepath.Join(cfg.Paths().Repo, "rules", newCat)
 	if _, err := os.Stat(oldDir); err == nil {
 		if _, err := os.Stat(newDir); err == nil {
 			writeErr(w, 409, fmt.Errorf("folder rules/%s already exists on disk — move or merge manually", newCat))
@@ -515,13 +515,13 @@ func (s *Server) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Update state entries — any rule in this instance whose category
 	// was oldCat now points at newCat.
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	state.RenameCategory(instanceID, oldCat, newCat)
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -562,7 +562,7 @@ func (s *Server) handleSetSortOrder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.getConfig()
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -573,7 +573,7 @@ func (s *Server) handleSetSortOrder(w http.ResponseWriter, r *http.Request) {
 	} else {
 		state.SetSortOrderOverride(req.InstanceID, req.RuleID, *req.SortOrder)
 	}
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -604,13 +604,13 @@ func (s *Server) handleSetInstanceExclude(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cfg := s.getConfig()
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	state.SetInstanceExcluded(req.InstanceID, req.Excluded)
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -631,13 +631,13 @@ func (s *Server) handleSetExclude(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg := s.getConfig()
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
 	state.SetExcluded(req.InstanceID, req.RuleID, req.Excluded)
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
@@ -671,7 +671,7 @@ func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err)
 		return
 	}
-	state, err := core.LoadMaintainerState(cfg.RepoDir)
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -749,7 +749,7 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	// requiring the user to run git commit manually.
 	gitCommitted := false
 	if !dryRun && !diff.Empty() {
-		if err := core.GitCommitExport(r.Context(), cfg.RepoDir); err != nil {
+		if err := core.GitCommitExport(r.Context(), cfg.Paths().Repo); err != nil {
 			log.Printf("git commit after export: %v (non-fatal)", err)
 		} else {
 			gitCommitted = true
@@ -771,7 +771,7 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 
 func (s *Server) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getConfig()
-	path := filepath.Join(cfg.RepoDir, "CHANGELOG.md")
+	path := filepath.Join(cfg.Paths().Repo, "CHANGELOG.md")
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		writeJSON(w, 200, map[string]string{"content": ""})

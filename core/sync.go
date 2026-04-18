@@ -118,8 +118,8 @@ func subLockFor(slug string) *sync.Mutex {
 
 // SubscriptionCloneDir is the canonical on-disk location of a subscription's
 // git clone. Exported so handlers can compute the path identically.
-func SubscriptionCloneDir(repoDir, slug string) string {
-	return filepath.Join(repoDir, "git-sources", slug)
+func SubscriptionCloneDir(sourcesDir, slug string) string {
+	return filepath.Join(sourcesDir, slug)
 }
 
 // PullSubscription fetches/clones the subscription and records the new
@@ -142,7 +142,7 @@ func PullSubscription(ctx context.Context, cfg *Config, state *ConsumerState, sl
 		auth.Token = strings.TrimSpace(string(tok))
 	}
 
-	dir := SubscriptionCloneDir(cfg.RepoDir, slug)
+	dir := SubscriptionCloneDir(cfg.Paths().Sources, slug)
 	var newSHA string
 	if _, err := os.Stat(filepath.Join(dir, ".git")); os.IsNotExist(err) {
 		if err := CloneSubscription(ctx, sub.URL, sub.Branch, dir, auth); err != nil {
@@ -161,7 +161,7 @@ func PullSubscription(ctx context.Context, cfg *Config, state *ConsumerState, sl
 		newSHA = sha
 	}
 	state.RecordPull(slug, newSHA)
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		return "", err
 	}
 	return newSHA, nil
@@ -235,7 +235,7 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 	if sub == nil {
 		return nil, fmt.Errorf("subscription %q not found", slug)
 	}
-	dir := SubscriptionCloneDir(cfg.RepoDir, slug)
+	dir := SubscriptionCloneDir(cfg.Paths().Sources, slug)
 	sha, err := CurrentSHA(ctx, dir)
 	if err != nil {
 		return nil, fmt.Errorf("no clone for subscription — run Pull first: %w", err)
@@ -353,7 +353,7 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 		return nil, fmt.Errorf("subscription %q not found", slug)
 	}
 
-	dir := SubscriptionCloneDir(cfg.RepoDir, slug)
+	dir := SubscriptionCloneDir(cfg.Paths().Sources, slug)
 	repoRules, err := listRepoRules(dir)
 	if err != nil {
 		return nil, fmt.Errorf("list repo rules: %w", err)
@@ -444,7 +444,7 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 		}
 	}
 
-	if err := state.Save(cfg.RepoDir); err != nil {
+	if err := state.Save(cfg.Paths().State); err != nil {
 		return result, fmt.Errorf("save state: %w", err)
 	}
 	return result, nil

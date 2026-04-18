@@ -52,8 +52,10 @@ func (d *ExportDiff) Empty() bool {
 // changelog is appended only at the very end, so a partial run does not
 // produce a half-written changelog entry.
 func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool) (*ExportDiff, error) {
+	paths := cfg.Paths()
+
 	// Serialize concurrent exports on the same repo. Different repos run parallel.
-	lock := lockForRepo(cfg.RepoDir)
+	lock := lockForRepo(paths.Repo)
 	lock.Lock()
 	defer lock.Unlock()
 
@@ -61,7 +63,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 		return nil, err
 	}
 
-	state, err := LoadMaintainerState(cfg.RepoDir)
+	state, err := LoadMaintainerState(paths.State)
 	if err != nil {
 		return nil, err
 	}
@@ -133,10 +135,10 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 				return nil, fmt.Errorf("build rule file (id=%d): %w", r.ID, err)
 			}
 
-			path := filepath.Join(cfg.RepoDir, "rules", inst.Category, slug+".json")
+			path := filepath.Join(paths.Repo, "rules", inst.Category, slug+".json")
 			oldPath := ""
 			if oldCategory != "" && oldCategory != inst.Category {
-				oldPath = filepath.Join(cfg.RepoDir, "rules", oldCategory, slug+".json")
+				oldPath = filepath.Join(paths.Repo, "rules", oldCategory, slug+".json")
 			}
 
 			existing, existsErr := os.ReadFile(path)
@@ -171,13 +173,13 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 			if !dryRun {
 				// Backup old file if we're about to overwrite or move it.
 				if exists {
-					if err := backupFile(path, cfg.RepoDir); err != nil {
+					if err := backupFile(path, paths.Backups); err != nil {
 						return nil, err
 					}
 				}
 				if oldPath != "" {
 					if _, err := os.Stat(oldPath); err == nil {
-						if err := backupFile(oldPath, cfg.RepoDir); err != nil {
+						if err := backupFile(oldPath, paths.Backups); err != nil {
 							return nil, err
 						}
 						if err := os.Remove(oldPath); err != nil {
@@ -198,7 +200,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 
 		// Per-instance state save: limits blast radius if a later instance fails.
 		if !dryRun && stateDirty {
-			if err := state.Save(cfg.RepoDir); err != nil {
+			if err := state.Save(paths.State); err != nil {
 				return nil, fmt.Errorf("save state after instance %d: %w", inst.QuiInstanceID, err)
 			}
 		}
@@ -238,9 +240,9 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 				Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
 			})
 			if !dryRun {
-				path := filepath.Join(cfg.RepoDir, "rules", entry.Category, entry.Slug+".json")
+				path := filepath.Join(paths.Repo, "rules", entry.Category, entry.Slug+".json")
 				if _, err := os.Stat(path); err == nil {
-					if err := backupFile(path, cfg.RepoDir); err != nil {
+					if err := backupFile(path, paths.Backups); err != nil {
 						return nil, err
 					}
 					if err := os.Remove(path); err != nil {
@@ -252,14 +254,14 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 			}
 		}
 		if !dryRun && removalsDirty {
-			if err := state.Save(cfg.RepoDir); err != nil {
+			if err := state.Save(paths.State); err != nil {
 				return nil, fmt.Errorf("save state after removals (instance %d): %w", inst.QuiInstanceID, err)
 			}
 		}
 	}
 
 	if !dryRun && !diff.Empty() {
-		if err := AppendChangelog(cfg.RepoDir, diff, time.Now()); err != nil {
+		if err := AppendChangelog(paths.Repo, diff, time.Now()); err != nil {
 			return nil, err
 		}
 	}
@@ -381,8 +383,8 @@ func deepEqualJSON(a, b any) bool {
 
 // backupFile moves a file into <repo>/backup/ with a date suffix.
 // If multiple runs on the same day, appends -1, -2, etc.
-func backupFile(src, repoDir string) error {
-	backupDir := filepath.Join(repoDir, "backup")
+func backupFile(src, backupsDir string) error {
+	backupDir := backupsDir
 	if err := os.MkdirAll(backupDir, 0o755); err != nil {
 		return err
 	}
@@ -405,11 +407,11 @@ func backupFile(src, repoDir string) error {
 }
 
 // CleanBackups deletes backup files older than retentionDays.
-func CleanBackups(repoDir string, retentionDays int) (int, error) {
+func CleanBackups(backupsDir string, retentionDays int) (int, error) {
 	if retentionDays <= 0 {
 		return 0, nil
 	}
-	backupDir := filepath.Join(repoDir, "backup")
+	backupDir := backupsDir
 	entries, err := os.ReadDir(backupDir)
 	if os.IsNotExist(err) {
 		return 0, nil
