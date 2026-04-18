@@ -1,0 +1,782 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>qui-sync</title>
+  <link rel="stylesheet" href="design-tokens.css">
+  <!-- Load order matters: app.js defines quiSyncApp() which Alpine evaluates
+       via x-data="quiSyncApp()" on body. If alpine loads first, the function
+       is still undefined and all x-show sections render blank. -->
+  <script defer src="app.js"></script>
+  <script defer src="alpine.min.js"></script>
+</head>
+<body x-data="quiSyncApp()" :data-scale="scale">
+
+<nav class="topnav">
+  <div class="logo">qui-sync</div>
+  <div class="tabs">
+    <div class="tab" :class="tab==='export'   && 'active'" @click="setTab('export')">Export</div>
+    <div class="tab" :class="tab==='sync'     && 'active'" @click="setTab('sync')">Sync</div>
+    <div class="tab" :class="tab==='settings' && 'active'" @click="setTab('settings')">Settings</div>
+  </div>
+  <div class="right">
+    <span x-show="health.status==='ok'"><span class="dot dot-ok"></span>v<span x-text="health.version"></span></span>
+    <span x-show="health.status==='err'"><span class="dot dot-err"></span>offline</span>
+  </div>
+</nav>
+
+<div class="dev-banner" x-show="!hideDevBanner">
+  <span>⚠️ <b>Early development</b> — this app is for testing only. Features may be incomplete or change without notice.</span>
+  <button class="dev-banner-close" @click="hideDevBanner = true; localStorage.setItem('qui.hideDevBanner', 'true')">✕</button>
+</div>
+
+<main class="container">
+
+  <!-- EXPORT TAB -->
+  <section x-show="tab==='export'">
+    <h1 class="page-title">Export</h1>
+    <p class="page-subtitle">Pull automations from your Qui instances and save them as versioned JSON files in your share-repo. Other users can subscribe to this repo via the Sync tab to import your rules.</p>
+
+    <div class="panel help-panel" x-show="!hideExportHelp">
+      <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
+        <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
+          <b>How it works:</b>
+          <b>1.</b> Expand an instance below to see its rules — exclude any you don't want to share.
+          <b>2.</b> Set the priority (sort order) for each rule — this is the order consumers will get them in.
+          <b>3.</b> Click <b>Preview</b> to see what would change, then <b>Commit export</b> to write files + auto-commit to git.
+          <b>4.</b> Push to GitHub when ready: <code>git push</code> from terminal (or use a git UI).
+        </div>
+        <button class="btn btn-sm" @click="dismissExportHelp()" title="Hide this help">✕</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Instances</div>
+        <button class="btn" @click="loadInstances()" :disabled="loading.instances">Refresh</button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <template x-if="instances.length === 0 && !loading.instances">
+          <div class="empty">No instances configured. Check Settings.</div>
+        </template>
+        <template x-if="loading.instances">
+          <div class="empty dim">Loading…</div>
+        </template>
+
+        <div class="instance-header-row instance-grid" x-show="instances.length > 0">
+          <span></span>
+          <span>Instance</span>
+          <span>Repo folder</span>
+          <span>Rules</span>
+          <span></span>
+        </div>
+
+        <template x-for="i in instances" :key="i.qui_instance_id + '-' + i.category">
+          <div class="instance-row" :class="i.excluded && 'instance-dimmed'">
+            <div class="instance-head instance-grid" @click="toggleInstance(i.qui_instance_id)">
+              <span class="chev" :class="expanded[i.qui_instance_id] && 'chev-open'">▸</span>
+              <span class="instance-id">
+                <b x-text="i.qui_name"></b>
+                <span class="dim" style="margin-left:6px; font-weight:normal; font-size:var(--font-xs)"
+                      x-text="'#' + i.qui_instance_id"></span>
+              </span>
+              <span @click.stop>
+                <template x-if="editingCategory !== i.qui_instance_id">
+                  <span class="badge badge-blue category-badge"
+                        @click="startEditCategory(i)"
+                        title="Click to rename — becomes the folder under rules/ in the share-repo">
+                    → <span x-text="i.category"></span>  <span class="dim">✎</span>
+                  </span>
+                </template>
+                <template x-if="editingCategory === i.qui_instance_id">
+                  <span class="category-editor">
+                    → <input class="input" style="width:140px; padding:2px 6px; font-size:var(--font-xs)"
+                             x-model="categoryDraft"
+                             x-ref="categoryInput"
+                             @keydown.enter.prevent="saveCategory(i)"
+                             @keydown.escape.prevent="cancelCategoryEdit()"
+                             @blur="saveCategory(i)"
+                             pattern="^[a-z0-9][a-z0-9_-]{0,62}$">
+                  </span>
+                </template>
+              </span>
+              <span class="instance-meta">
+                <template x-if="!i.excluded">
+                  <span>
+                    <span x-text="i.rule_count"></span> rules
+                    <template x-if="i.excluded_count > 0">
+                      <span class="badge badge-amber" style="margin-left:6px">
+                        <span x-text="i.excluded_count"></span> excluded
+                      </span>
+                    </template>
+                  </span>
+                </template>
+                <template x-if="i.excluded">
+                  <span class="badge badge-amber">instance excluded</span>
+                </template>
+              </span>
+              <span class="instance-status">
+                <span x-show="i.ping==='ok'"><span class="dot dot-ok"></span>connected</span>
+                <span x-show="i.ping==='fail'" class="diff-remove">
+                  <span class="dot dot-err"></span>
+                  <span x-text="i.ping_error || 'failed'"></span>
+                </span>
+                <button class="btn btn-sm" style="margin-left:12px"
+                        @click.stop="toggleInstanceExclude(i)"
+                        x-text="i.excluded ? 'Include instance' : 'Exclude instance'"></button>
+              </span>
+            </div>
+
+            <div class="instance-body" x-show="expanded[i.qui_instance_id]" x-transition>
+              <template x-if="loadingRules[i.qui_instance_id]">
+                <div class="empty dim" style="padding:20px">Loading rules…</div>
+              </template>
+              <template x-if="!loadingRules[i.qui_instance_id] && rulesByInstance[i.qui_instance_id]">
+                <div>
+                  <div class="rule-toolbar">
+                    <button class="btn" @click="includeAll(i.qui_instance_id)">Include all</button>
+                    <button class="btn" @click="excludeAll(i.qui_instance_id)">Exclude all</button>
+                    <span class="dim" style="margin-left:auto; font-size:var(--font-xs)">
+                      Toggle excludes any rule from export. Excluded rules stay in Qui but never reach the repo.
+                    </span>
+                  </div>
+                  <table class="table rule-table">
+                    <thead>
+                      <tr>
+                        <th style="width:40px"></th>
+                        <th style="width:90px">Priority</th>
+                        <th>Name</th>
+                        <th>Slug</th>
+                        <th style="width:90px">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="rule in rulesByInstance[i.qui_instance_id]" :key="rule.qui_id">
+                        <tr :class="rule.excluded && 'rule-excluded'">
+                          <td>
+                            <input type="checkbox"
+                                   :checked="!rule.excluded"
+                                   @change="toggleExclude(i.qui_instance_id, rule)">
+                          </td>
+                          <td class="priority-cell">
+                            <input type="number"
+                                   class="input priority-input"
+                                   :value="rule.sort_order"
+                                   :title="rule.has_sort_override
+                                     ? 'Override — Qui\'s value is ' + rule.qui_sort_order
+                                     : 'From Qui'"
+                                   @change="saveSortOrder(i.qui_instance_id, rule, $event.target.value)">
+                            <button class="priority-reset"
+                                    x-show="rule.has_sort_override"
+                                    @click="resetSortOrder(i.qui_instance_id, rule)"
+                                    title="Reset to Qui's value">↺</button>
+                          </td>
+                          <td>
+                            <span x-text="rule.name"></span>
+                            <span x-show="!rule.enabled" class="badge" style="margin-left:6px">disabled</span>
+                          </td>
+                          <td class="dim" style="font-family:var(--font-mono); font-size:var(--font-xs)">
+                            <span x-text="rule.slug || '—'"></span>
+                          </td>
+                          <td>
+                            <span x-show="rule.excluded" class="badge badge-amber">excluded</span>
+                            <span x-show="!rule.excluded" class="dim">included</span>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Run export</div>
+        <button class="btn" @click="preview()" :disabled="loading.export"
+                title="Show what would change without writing anything. Safe to run anytime.">Preview</button>
+        <button class="btn btn-primary" @click="runExport()"
+                :disabled="loading.export"
+                title="Write changes to disk and auto-commit to git. Your share-repo is updated and ready for Pull/Sync.">Commit export</button>
+      </div>
+      <div class="panel-body">
+        <template x-if="!diff && !loading.export">
+          <div class="empty">Click <b>Preview</b> to see what would change.</div>
+        </template>
+        <template x-if="loading.export">
+          <div class="empty dim">Running export against Qui…</div>
+        </template>
+        <template x-if="diff && diff.empty">
+          <div class="empty">
+            <span class="dot dot-ok"></span>No changes — local rules are in sync with Qui.
+          </div>
+        </template>
+        <template x-if="diff && !diff.empty">
+          <div>
+            <div x-show="diff.added.length">
+              <div class="diff-add" style="font-weight:600">+ <span x-text="diff.added.length"></span> added</div>
+              <ul>
+                <template x-for="e in diff.added" :key="e.QuiID">
+                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>
+                </template>
+              </ul>
+            </div>
+            <div x-show="diff.updated.length">
+              <div class="diff-update" style="font-weight:600">~ <span x-text="diff.updated.length"></span> updated</div>
+              <ul>
+                <template x-for="e in diff.updated" :key="e.QuiID">
+                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>
+                </template>
+              </ul>
+            </div>
+            <div x-show="diff.renamed.length">
+              <div class="diff-rename" style="font-weight:600">R <span x-text="diff.renamed.length"></span> renamed</div>
+              <ul>
+                <template x-for="e in diff.renamed" :key="e.QuiID">
+                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — "<span x-text="e.OldName"></span>" → "<span x-text="e.Name"></span>"</li>
+                </template>
+              </ul>
+            </div>
+            <div x-show="diff.removed.length">
+              <div class="diff-remove" style="font-weight:600">- <span x-text="diff.removed.length"></span> removed</div>
+              <ul>
+                <template x-for="e in diff.removed" :key="e.QuiID">
+                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>
+                </template>
+              </ul>
+            </div>
+            <div x-show="diff.moved && diff.moved.length">
+              <div class="diff-move" style="font-weight:600">↦ <span x-text="diff.moved.length"></span> moved</div>
+              <ul>
+                <template x-for="e in diff.moved" :key="e.QuiID">
+                  <li><b x-text="e.Slug"></b> — <span x-text="e.OldCategory"></span> → <span x-text="e.Category"></span></li>
+                </template>
+              </ul>
+            </div>
+            <div style="margin-top:12px; font-size:var(--font-xs); color:var(--text-dim)"
+                 x-show="diff.dry_run">
+              Preview only — nothing written yet. Click <b>Commit export</b> to apply.
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Changelog</div>
+        <button class="btn" @click="loadChangelog()" :disabled="loading.changelog">Refresh</button>
+      </div>
+      <div class="panel-body">
+        <template x-if="!changelog || !changelog.content">
+          <div class="empty">No CHANGELOG.md yet — run your first export.</div>
+        </template>
+        <pre x-show="changelog && changelog.content"
+             style="white-space:pre-wrap; font-size:var(--font-sm); color:var(--text-secondary);
+                    background:var(--bg-base); padding:12px; border-radius:var(--radius);
+                    max-height:400px; overflow:auto; margin:0;"
+             x-text="(changelog && changelog.content) || ''"></pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- SETTINGS TAB -->
+  <section x-show="tab==='settings'">
+    <h1 class="page-title">Settings</h1>
+    <p class="page-subtitle">Configure Qui connection, export instances, backup, and appearance. Changes save to config.yml immediately.</p>
+
+    <div class="panel" style="border-color:var(--accent-amber)"
+         x-show="config && config.qui && !config.qui.api_key_present">
+      <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber)">
+        <b>Setup needed</b> — enter your Qui URL and API key below to get started. Export and Sync won't work until Qui is connected.
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">Appearance</div></div>
+      <div class="panel-body">
+        <label>Text scale
+          <select class="input" x-model="scale" @change="saveScale()">
+            <option value="compact">Compact</option>
+            <option value="default">Default</option>
+            <option value="large">Large</option>
+          </select>
+        </label>
+        <p class="muted" style="font-size:var(--font-xs); margin-top:8px">
+          Stored in your browser. Affects typography only.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Qui connection</div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <label>URL</label>
+          <input class="input" x-model="quiDraft.url" placeholder="http://qui.local:7476"
+                 autocomplete="off" data-1p-ignore data-lpignore="true" spellcheck="false">
+          <label>API key</label>
+          <div>
+            <input class="input" type="password" x-model="quiDraft.apiKey" style="width:100%"
+                   placeholder="Leave blank to keep current key"
+                   autocomplete="new-password" data-1p-ignore data-lpignore="true" spellcheck="false">
+            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
+              Use the <b>full API key</b> from Qui Settings → API Keys (not a Client Proxy key).
+              <br>Current key:
+              <span x-show="config?.qui?.api_key_present" class="badge badge-green">present</span>
+              <span x-show="config?.qui && !config.qui.api_key_present" class="badge badge-red">missing</span>
+              <span x-show="config?.qui?.api_key_filename" class="muted"
+                    x-text="config?.qui ? ' (file: ' + config.qui.api_key_filename + ')' : ''"></span>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:12px; display:flex; gap:8px">
+          <button class="btn btn-primary" @click="saveQuiConfig()" :disabled="loading.config">Save</button>
+          <button class="btn" @click="resetQuiDraft()">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Export instances</div>
+        <button class="btn" @click="openAddInstanceModal()">+ Add instance</button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <table class="table" x-show="config && config.export_instances && config.export_instances.length">
+          <thead>
+            <tr>
+              <th style="width:120px">Qui instance</th>
+              <th>Repo folder</th>
+              <th style="width:100px; text-align:right"></th>
+            </tr>
+          </thead>
+          <tbody>
+            <template x-for="i in (config && config.export_instances) || []" :key="i.qui_instance_id">
+              <tr>
+                <td x-text="'#' + i.qui_instance_id"></td>
+                <td style="font-family:var(--font-mono); font-size:var(--font-sm)" x-text="i.category"></td>
+                <td style="text-align:right">
+                  <button class="btn btn-sm btn-danger" @click="removeInstance(i)">Remove</button>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+        <div x-show="!config || !config.export_instances || config.export_instances.length === 0"
+             class="empty">No instances configured. Click "Add instance" to get started.</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Backup</div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <label>Retention days</label>
+          <input class="input" type="number" min="0" max="3650" style="width:100px"
+                 x-model.number="backupDraft.retention_days">
+          <label>Gitignored</label>
+          <input type="checkbox" x-model="backupDraft.gitignored">
+        </div>
+        <p class="dim" style="font-size:var(--font-xs); margin-top:8px">
+          Backups live in <code>&lt;repo&gt;/backup/</code>. 0 = never delete. Typical: 30-90.
+        </p>
+        <div style="margin-top:12px; display:flex; gap:8px">
+          <button class="btn btn-primary" @click="saveBackupConfig()">Save</button>
+          <button class="btn" @click="resetBackupDraft()">Reset</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Auto-sync</div>
+      </div>
+      <div class="panel-body">
+        <div class="form-grid">
+          <label>Pull interval</label>
+          <select class="input" style="width:160px" x-model="autoPullInterval" @change="saveAutoPullInterval()">
+            <option value="off">Off (manual only)</option>
+            <option value="5m">Every 5 minutes</option>
+            <option value="1h">Every hour</option>
+            <option value="6h">Every 6 hours</option>
+            <option value="12h">Every 12 hours</option>
+            <option value="24h">Every 24 hours</option>
+          </select>
+        </div>
+        <p class="dim" style="font-size:var(--font-xs); margin-top:8px">
+          When enabled, qui-sync pulls all subscriptions on this interval and
+          auto-applies changes to rules marked with the "Auto" checkbox in the
+          Plan view. Rules without Auto stay manual — you apply them yourself.
+          New rules from the repo are never auto-applied.
+        </p>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">System</div>
+        <button class="btn" @click="reloadConfig()" :disabled="loading.config">Reload config from disk</button>
+      </div>
+      <div class="panel-body">
+        <dl class="kv-list" x-show="config">
+          <dt>Version</dt><dd><span x-text="health.version || '—'"></span></dd>
+          <dt>Mode</dt><dd><span x-text="(config && config.mode) || '—'"></span></dd>
+          <dt>Repo directory</dt><dd style="font-family:var(--font-mono); font-size:var(--font-xs)"><span x-text="(config && config.repo_dir) || '—'"></span></dd>
+        </dl>
+      </div>
+    </div>
+
+    <!-- Add-instance modal -->
+    <div class="modal-backdrop" x-show="addInstanceOpen" @keydown.escape.window="addInstanceOpen = false"
+         x-transition.opacity style="display:none">
+      <div class="modal" @click.stop>
+        <div class="modal-title">Add export instance</div>
+        <div class="modal-body">
+          <p class="dim" style="font-size:var(--font-sm); margin-bottom:16px">
+            Pick a Qui instance to track. Rules from this instance will be exported
+            to the specified folder in the share-repo.
+          </p>
+          <div class="form-grid">
+            <label>Qui instance</label>
+            <select class="input" x-model.number="addInstanceDraft.qui_instance_id">
+              <option :value="0">— select —</option>
+              <template x-for="qi in availableQuiInstances" :key="qi.id">
+                <option :value="qi.id" :disabled="qi.configured"
+                        x-text="qi.name + ' (#' + qi.id + ')' + (qi.configured ? ' — already added' : '')"></option>
+              </template>
+            </select>
+            <label>Repo folder</label>
+            <input class="input" x-model="addInstanceDraft.category"
+                   placeholder="e.g. movies"
+                   pattern="^[a-z0-9][a-z0-9_-]{0,62}$">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" @click="addInstanceOpen = false">Cancel</button>
+          <button class="btn btn-primary" @click="addInstance()"
+                  :disabled="!addInstanceDraft.qui_instance_id || !addInstanceDraft.category">Add</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SYNC TAB -->
+  <section x-show="tab==='sync'">
+    <h1 class="page-title">Sync</h1>
+    <p class="page-subtitle">Subscribe to share-repos and apply their rules to your Qui instances. Your local trackers and preferences are preserved on update.</p>
+
+    <div class="panel help-panel" x-show="!hideSyncHelp">
+      <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
+        <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
+          <b>How it works:</b>
+          <b>1.</b> Add a subscription — point it at a git repo URL (public or private with SSH key / token).
+          <b>2.</b> Click <b>Pull</b> to fetch the latest rules from the repo.
+          <b>3.</b> Select which Qui instance to sync to, then click <b>Plan</b> to preview.
+          <b>4.</b> For each rule, choose: <em>Create new</em> in Qui, <em>Link</em> to an existing rule, or <em>Skip</em>.
+          <b>5.</b> Click <b>Apply</b> — new rules are created disabled. Linked rules are updated but your trackers, enabled state, and intervals are preserved.
+          <b>6.</b> Toggle <b>Auto</b> on rules you want to keep in sync automatically whenever the repo updates.
+        </div>
+        <button class="btn btn-sm" @click="dismissSyncHelp()" title="Hide this help">✕</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Subscriptions</div>
+        <button class="btn" @click="openAddSubModal()">+ Add subscription</button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <template x-if="!subscriptions || subscriptions.length === 0">
+          <div class="empty">No subscriptions yet. Click "Add subscription" to track a repo.</div>
+        </template>
+
+        <template x-for="sub in subscriptions" :key="sub.slug">
+          <div class="instance-row">
+            <div class="instance-head sub-head" @click="toggleSub(sub.slug)">
+              <span class="chev" :class="expandedSub[sub.slug] && 'chev-open'">▸</span>
+              <span class="sub-name"><b x-text="sub.slug"></b></span>
+              <span class="sub-url dim" x-text="sub.url"></span>
+              <span class="sub-meta">
+                <span x-text="(sub.repo_rule_count || sub.rule_count || 0) + ' rules'"></span>
+                <span x-show="sub.last_pull_at" class="dim"
+                      style="margin-left:8px; font-size:var(--font-xs)"
+                      x-text="'pulled ' + (sub.last_pull_sha || '').slice(0,7)"></span>
+              </span>
+              <span class="sub-actions">
+                <button class="btn btn-sm" @click.stop="pullSub(sub.slug)">Pull</button>
+                <button class="btn btn-sm btn-danger" @click.stop="removeSub(sub)">Remove</button>
+              </span>
+            </div>
+
+            <div class="instance-body" x-show="expandedSub[sub.slug]" x-transition>
+              <div class="sub-toolbar">
+                <label style="font-size:var(--font-sm)">Sync to:
+                  <select class="input" style="margin-left:8px"
+                          x-model.number="selectedInstanceBySub[sub.slug]">
+                    <option :value="0">— select instance —</option>
+                    <template x-for="i in instances" :key="i.qui_instance_id">
+                      <option :value="i.qui_instance_id"
+                              x-text="i.qui_name + ' (#' + i.qui_instance_id + ')'"></option>
+                    </template>
+                  </select>
+                </label>
+                <button class="btn btn-primary" style="margin-left:12px"
+                        @click="planSub(sub.slug)"
+                        :disabled="!selectedInstanceBySub[sub.slug] || loadingPlan[sub.slug]">
+                  Plan
+                </button>
+                <button class="btn btn-primary" style="margin-left:8px"
+                        @click="openApplyModal(sub.slug)"
+                        :disabled="!planBySub[sub.slug] || applying[sub.slug]">
+                  Apply selected
+                </button>
+              </div>
+
+              <template x-if="loadingPlan[sub.slug]">
+                <div class="empty dim" style="padding:20px">Building plan…</div>
+              </template>
+
+              <template x-if="planBySub[sub.slug]">
+                <div>
+                  <div class="plan-toolbar" style="padding:8px 16px 12px; display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+                    <span class="dim" style="font-size:var(--font-xs); margin-right:4px">Category:</span>
+                    <button class="btn btn-sm" :class="!planCategoryFilter[sub.slug] && 'btn-primary'"
+                            @click="planCategoryFilter[sub.slug] = ''">All</button>
+                    <template x-for="cat in planCategories(sub.slug)" :key="cat">
+                      <button class="btn btn-sm" :class="planCategoryFilter[sub.slug] === cat && 'btn-primary'"
+                              @click="planCategoryFilter[sub.slug] = cat" x-text="cat"></button>
+                    </template>
+                    <span class="dim" style="margin-left:auto; font-size:var(--font-xs)">
+                      <span x-text="filteredPlanRules(sub.slug).length"></span> of
+                      <span x-text="planBySub[sub.slug].rules.length"></span> rules
+                      <span x-show="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length"
+                            x-text="' · ' + planBySub[sub.slug].orphans.length + ' orphans'"></span>
+                      <span x-show="planBySub[sub.slug].source_sha"
+                            x-text="' · HEAD ' + planBySub[sub.slug].source_sha.slice(0,7)"></span>
+                    </span>
+                  </div>
+                  <div style="display:flex; gap:8px; padding:0 16px 8px">
+                    <button class="btn btn-sm" @click="selectAllRules(sub.slug, true)">Select all</button>
+                    <button class="btn btn-sm" @click="selectAllRules(sub.slug, false)">Deselect all</button>
+                  </div>
+                  <table class="table plan-table">
+                    <thead>
+                      <tr>
+                        <th style="width:40px"></th>
+                        <th style="width:80px">Priority</th>
+                        <th>Repo rule</th>
+                        <th style="width:260px">Link to Qui rule</th>
+                        <th style="width:80px">Auto</th>
+                        <th style="width:100px">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="rule in filteredPlanRules(sub.slug)" :key="rule.repo_path">
+                        <tr :class="rule.action === 'skip' && 'rule-excluded'">
+                          <td>
+                            <input type="checkbox"
+                                   :checked="rule.action !== 'skip'"
+                                   @change="toggleRuleSkip(sub.slug, rule)">
+                          </td>
+                          <td>
+                            <input type="number" class="input priority-input"
+                                   :value="rule.sort_order"
+                                   @change="setRulePriority(sub.slug, rule, $event.target.value)">
+                          </td>
+                          <td>
+                            <div x-text="rule.name"></div>
+                            <div class="dim" style="font-family:var(--font-mono); font-size:var(--font-xs)"
+                                 x-text="rule.repo_path"></div>
+                          </td>
+                          <td>
+                            <select class="input" style="width:100%; font-size:var(--font-xs)"
+                                    :value="rule.action === 'update_existing' ? 'u:' + rule.qui_rule_id : rule.action"
+                                    @change="setRuleLink(sub.slug, rule, $event.target.value)">
+                              <option value="create_new">Create new</option>
+                              <option value="skip">Skip this rule</option>
+                              <template x-for="qr in quiRulesCache[selectedInstanceBySub[sub.slug]] || []" :key="qr.qui_rule_id">
+                                <option :value="'u:' + qr.qui_rule_id" x-text="'Link: ' + qr.name + ' (#' + qr.qui_rule_id + ')'"></option>
+                              </template>
+                            </select>
+                          </td>
+                          <td style="text-align:center">
+                            <input type="checkbox"
+                                   :checked="rule.auto_sync"
+                                   :disabled="!rule.from_state"
+                                   :title="rule.from_state ? 'Auto-sync on future pulls' : 'Apply manually first to enable auto-sync'"
+                                   @change="toggleAutoSync(sub.slug, rule)">
+                          </td>
+                          <td>
+                            <span x-show="rule.action === 'create_new'" class="badge badge-green">CREATE</span>
+                            <span x-show="rule.action === 'update_existing'" class="badge badge-amber">UPDATE ⚠</span>
+                            <span x-show="rule.action === 'skip'" class="badge">SKIP</span>
+                          </td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+
+                  <template x-if="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length">
+                    <div style="padding:16px">
+                      <div class="dim" style="font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px">
+                        Orphans in Qui — not in this repo (MVP leaves these alone)
+                      </div>
+                      <template x-for="o in planBySub[sub.slug].orphans" :key="o.qui_rule_id">
+                        <div class="dim" style="font-size:var(--font-sm)">
+                          <span x-text="o.name"></span>
+                          <span style="margin-left:6px" x-text="'#' + o.qui_rule_id"></span>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                </div>
+              </template>
+
+              <template x-if="!planBySub[sub.slug] && !loadingPlan[sub.slug]">
+                <div class="empty">Pick a Qui instance and click "Plan" to preview.</div>
+              </template>
+            </div>
+          </div>
+        </template>
+      </div>
+    </div>
+  </section>
+
+  <!-- Add subscription modal. SSH-mode uses two phases: phase 1 generates
+       the key + shows the pubkey inline; phase 2 (after user pastes into
+       GitHub) actually adds the subscription. -->
+  <div class="modal-backdrop" x-show="addSubOpen" @keydown.escape.window="cancelAddSub()"
+       x-transition.opacity style="display:none">
+    <div class="modal" @click.stop style="width:620px">
+      <div class="modal-title">Add subscription</div>
+      <div class="modal-body">
+        <div class="form-grid">
+          <label>Name</label>
+          <input class="input" x-model="addSubDraft.slug" placeholder="e.g. prophet-movies, my-tv-setup"
+                 autocomplete="off" spellcheck="false"
+                 :disabled="addSubSSHKey.length > 0">
+          <label>URL</label>
+          <input class="input" x-model="addSubDraft.url" placeholder="https://github.com/.../qui-automations.git or /data"
+                 autocomplete="off" spellcheck="false"
+                 :disabled="addSubSSHKey.length > 0"
+                 title="Git repo URL (HTTPS or SSH), or a local path like /data for testing against your own export repo">
+          <label>Branch</label>
+          <input class="input" x-model="addSubDraft.branch" placeholder="main" autocomplete="off"
+                 :disabled="addSubSSHKey.length > 0">
+          <label>Auth</label>
+          <select class="input" x-model="addSubDraft.auth_mode" :disabled="addSubSSHKey.length > 0">
+            <option value="public">Public repo (no auth)</option>
+            <option value="ssh_deploy_key">SSH deploy key</option>
+            <option value="token">Personal access token</option>
+          </select>
+          <template x-if="addSubDraft.auth_mode === 'token'">
+            <div style="grid-column:1/-1; display:contents">
+              <label>Token</label>
+              <input class="input" type="password" x-model="addSubDraft.token"
+                     placeholder="ghp_... (stored at /config/git-keys/&lt;slug&gt;/token, 0600)"
+                     autocomplete="new-password" data-1p-ignore data-lpignore="true" spellcheck="false">
+            </div>
+          </template>
+        </div>
+
+        <!-- SSH hint before generation -->
+        <p class="dim" style="font-size:var(--font-xs); margin-top:12px"
+           x-show="addSubDraft.auth_mode === 'ssh_deploy_key' && !addSubSSHKey">
+          qui-sync will generate an ed25519 keypair. You'll paste the public
+          key into the repo's Settings → Deploy keys before the subscription is created.
+        </p>
+
+        <!-- SSH public key display, appears inline after phase 1 -->
+        <template x-if="addSubSSHKey">
+          <div style="margin-top:16px">
+            <div style="font-size:var(--font-sm); font-weight:500; margin-bottom:6px">
+              Deploy key generated — paste this into GitHub
+            </div>
+            <p class="dim" style="font-size:var(--font-xs); margin-bottom:8px">
+              github.com/&lt;your-repo&gt;/settings/keys → "Add deploy key".
+              Leave "Allow write access" <b>unchecked</b>. Then click Add below.
+            </p>
+            <pre style="background:var(--bg-base); padding:12px; border-radius:var(--radius);
+                        font-family:var(--font-mono); font-size:var(--font-xs);
+                        white-space:pre-wrap; word-break:break-all; max-height:160px; overflow:auto; margin:0"
+                 x-text="addSubSSHKey"></pre>
+            <button class="btn btn-sm" style="margin-top:8px" @click="copyAddSubKey()">Copy key</button>
+          </div>
+        </template>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" @click="cancelAddSub()">Cancel</button>
+        <button class="btn btn-primary"
+                @click="addSubscription()"
+                :disabled="!addSubDraft.slug || !addSubDraft.url"
+                x-text="addSubNextLabel()"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Apply confirmation -->
+  <div class="modal-backdrop" x-show="applyModal.open" @keydown.escape.window="applyModal.open = false"
+       x-transition.opacity style="display:none">
+    <div class="modal" @click.stop style="width:520px">
+      <div class="modal-title">Apply to Qui?</div>
+      <div class="modal-body">
+        <p style="font-size:var(--font-sm); margin-bottom:12px">
+          This will write to Qui instance <b x-text="applyModal.instanceName"></b>:
+        </p>
+        <ul style="font-size:var(--font-sm); line-height:1.8">
+          <li><b class="diff-add" x-text="applyModal.create"></b> new rules created (disabled by default — enable in Qui)</li>
+          <li><b class="diff-update" x-text="applyModal.update"></b> existing rules updated
+            <span class="dim">(logic replaced; your trackers, enabled state, and intervals preserved)</span></li>
+          <li><b class="dim" x-text="applyModal.skip"></b> rules skipped</li>
+        </ul>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" @click="applyModal.open = false">Cancel</button>
+        <button class="btn btn-primary" @click="runApply()">Apply</button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<div class="toasts" aria-live="polite">
+  <template x-for="t in toasts" :key="t.id">
+    <div class="toast" :class="'toast-'+t.kind" @click="dismiss(t.id)">
+      <span x-text="t.msg"></span>
+      <span class="toast-close" aria-label="Dismiss">×</span>
+    </div>
+  </template>
+</div>
+
+<div class="modal-backdrop" x-show="modal.open" @keydown.escape.window="modalCancel()"
+     x-transition.opacity style="display:none">
+  <div class="modal" @click.stop>
+    <div class="modal-title" x-text="modal.title"></div>
+    <div class="modal-body" x-text="modal.body"></div>
+    <div class="modal-actions">
+      <button class="btn" @click="modalCancel()" x-text="modal.cancelLabel"></button>
+      <button class="btn btn-primary" @click="modalConfirm()"
+              x-text="modal.confirmLabel" x-ref="modalConfirmBtn"></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // Persist tab + scale across reloads. App wiring in app.js.
+  window.__QUI_SYNC_BOOTSTRAP__ = {
+    tab:   localStorage.getItem('qui.tab')   || 'export',
+    scale: localStorage.getItem('qui.scale') || 'default',
+  };
+</script>
+</body>
+</html>

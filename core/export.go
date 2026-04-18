@@ -1,0 +1,452 @@
+package core
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"time"
+)
+
+// ExportDiff summarises what an export would change.
+type ExportDiff struct {
+	Added   []DiffEntry
+	Updated []DiffEntry
+	Removed []DiffEntry
+	Renamed []DiffEntry // same qui_id, different name (rule-level rename)
+	Moved   []DiffEntry // same qui_id, different category (config change)
+}
+
+type DiffEntry struct {
+	Slug        string
+	Category    string
+	Name        string
+	OldName     string // for Renamed entries
+	OldCategory string // for Moved entries
+	QuiID       int
+}
+
+// Empty returns true if nothing changed.
+func (d *ExportDiff) Empty() bool {
+	return len(d.Added) == 0 && len(d.Updated) == 0 && len(d.Removed) == 0 &&
+		len(d.Renamed) == 0 && len(d.Moved) == 0
+}
+
+// RunExport performs an end-to-end export:
+//  1. Fetch all automations from configured Qui instances
+//  2. For each, assign/reuse a slug
+//  3. Transform payload (strip user-specific fields, apply reverse mappings)
+//  4. Compare against on-disk rules → compute diff
+//  5. Backup removed/changed files
+//  6. Write new/updated files
+//  7. Update state + changelog
+//
+// When dryRun is true, no filesystem changes are made.
+//
+// Atomicity: state is saved after each instance completes, so a mid-export
+// crash leaves the already-processed instances in a consistent state. The
+// changelog is appended only at the very end, so a partial run does not
+// produce a half-written changelog entry.
+func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool) (*ExportDiff, error) {
+	// Serialize concurrent exports on the same repo. Different repos run parallel.
+	lock := lockForRepo(cfg.RepoDir)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	state, err := LoadMaintainerState(cfg.RepoDir)
+	if err != nil {
+		return nil, err
+	}
+
+	diff := &ExportDiff{}
+	// Track which (instance, ruleID) we saw this run so we can detect removals.
+	seen := map[int]map[int]bool{}
+
+	for _, inst := range cfg.ExportInstances {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		// Whole-instance exclude: skip entirely. Leaves existing exported
+		// files as orphans (same semantics as per-rule exclude).
+		if state.IsInstanceExcluded(inst.QuiInstanceID) {
+			continue
+		}
+		seen[inst.QuiInstanceID] = map[int]bool{}
+		stateDirty := false
+
+		rules, err := client.ListAutomations(ctx, inst.QuiInstanceID)
+		if err != nil {
+			return nil, fmt.Errorf("list automations (instance %d): %w", inst.QuiInstanceID, err)
+		}
+
+		for _, r := range rules {
+			// Excluded rules are invisible to qui-sync: skip entirely, don't
+			// add to seen (so removal detection also skips them).
+			if state.IsExcluded(inst.QuiInstanceID, r.ID) {
+				continue
+			}
+			seen[inst.QuiInstanceID][r.ID] = true
+
+			// Resolve slug: reuse from state, else assign a new unique one.
+			entry, ok := state.Lookup(inst.QuiInstanceID, r.ID)
+			var slug string
+			var oldCategory string
+			if ok {
+				slug = entry.Slug
+				oldCategory = entry.Category
+				if entry.LastName != r.Name {
+					diff.Renamed = append(diff.Renamed, DiffEntry{
+						Slug: slug, Category: inst.Category,
+						Name: r.Name, OldName: entry.LastName, QuiID: r.ID,
+					})
+				}
+				// Category-move: state says category X, config now says Y.
+				// Treat as a move: remove old file, write new, log in diff.
+				if oldCategory != "" && oldCategory != inst.Category {
+					diff.Moved = append(diff.Moved, DiffEntry{
+						Slug: slug, Category: inst.Category, OldCategory: oldCategory,
+						Name: r.Name, QuiID: r.ID,
+					})
+				}
+			} else {
+				taken := state.AllSlugsInInstance(inst.QuiInstanceID)
+				slug = UniqueSlug(r.Name, taken)
+			}
+
+			// Effective sortOrder = user override (if any) else Qui's own value.
+			effectiveSortOrder := r.SortOrder
+			if override, ok := state.SortOrderOverride(inst.QuiInstanceID, r.ID); ok {
+				effectiveSortOrder = override
+			}
+
+			// Transform the raw payload into the upstream file shape.
+			fileJSON, err := buildRuleFile(r, slug, cfg, effectiveSortOrder)
+			if err != nil {
+				return nil, fmt.Errorf("build rule file (id=%d): %w", r.ID, err)
+			}
+
+			path := filepath.Join(cfg.RepoDir, "rules", inst.Category, slug+".json")
+			oldPath := ""
+			if oldCategory != "" && oldCategory != inst.Category {
+				oldPath = filepath.Join(cfg.RepoDir, "rules", oldCategory, slug+".json")
+			}
+
+			existing, existsErr := os.ReadFile(path)
+			exists := existsErr == nil
+			renamed := entry != nil && entry.LastName != r.Name
+			if exists && oldPath == "" {
+				// Compare semantic JSON (ignore whitespace).
+				if jsonEqual(existing, fileJSON) {
+					// No functional changes. Still backfill state in case it was missing.
+					if entry == nil || entry.LastName != r.Name || entry.Category != inst.Category {
+						state.Assign(inst.QuiInstanceID, r.ID, slug, r.Name, inst.Category)
+						stateDirty = true
+					}
+					continue
+				}
+				// If only the `name` field differs and the rule was renamed,
+				// treat it as a pure rename — already logged above, skip Updated.
+				// Otherwise it's a real content change.
+				if !(renamed && jsonEqualExceptName(existing, fileJSON)) {
+					diff.Updated = append(diff.Updated, DiffEntry{
+						Slug: slug, Category: inst.Category, Name: r.Name, QuiID: r.ID,
+					})
+				}
+			} else if !exists && oldPath == "" {
+				diff.Added = append(diff.Added, DiffEntry{
+					Slug: slug, Category: inst.Category, Name: r.Name, QuiID: r.ID,
+				})
+			}
+			// If oldPath != "", the move entry is already logged above; we skip
+			// the Updated/Added classification since it's a move.
+
+			if !dryRun {
+				// Backup old file if we're about to overwrite or move it.
+				if exists {
+					if err := backupFile(path, cfg.RepoDir); err != nil {
+						return nil, err
+					}
+				}
+				if oldPath != "" {
+					if _, err := os.Stat(oldPath); err == nil {
+						if err := backupFile(oldPath, cfg.RepoDir); err != nil {
+							return nil, err
+						}
+						if err := os.Remove(oldPath); err != nil {
+							return nil, fmt.Errorf("remove old-category file %s: %w", oldPath, err)
+						}
+					}
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					return nil, err
+				}
+				if err := os.WriteFile(path, fileJSON, 0o644); err != nil {
+					return nil, fmt.Errorf("write %s: %w", path, err)
+				}
+			}
+			state.Assign(inst.QuiInstanceID, r.ID, slug, r.Name, inst.Category)
+			stateDirty = true
+		}
+
+		// Per-instance state save: limits blast radius if a later instance fails.
+		if !dryRun && stateDirty {
+			if err := state.Save(cfg.RepoDir); err != nil {
+				return nil, fmt.Errorf("save state after instance %d: %w", inst.QuiInstanceID, err)
+			}
+		}
+	}
+
+	// Detect removals: anything in state for a scanned instance that wasn't seen.
+	for _, inst := range cfg.ExportInstances {
+		// Instance-level excludes skip the removal scan too.
+		if state.IsInstanceExcluded(inst.QuiInstanceID) {
+			continue
+		}
+		seenInstance, ok := seen[inst.QuiInstanceID]
+		if !ok {
+			continue
+		}
+		removalsDirty := false
+		for _, quiID := range state.SortedRuleIDs(inst.QuiInstanceID) {
+			if seenInstance[quiID] {
+				continue
+			}
+			// Excluded rules may still live in state (from before they were
+			// excluded, or for slug re-use if un-excluded later). Don't flag
+			// them as Removed.
+			if state.IsExcluded(inst.QuiInstanceID, quiID) {
+				continue
+			}
+			entry, _ := state.Lookup(inst.QuiInstanceID, quiID)
+			if entry == nil {
+				continue
+			}
+			// Only mark removals for rules whose recorded category matches the
+			// instance we just scanned, to avoid clashes across categories.
+			if entry.Category != "" && entry.Category != inst.Category {
+				continue
+			}
+			diff.Removed = append(diff.Removed, DiffEntry{
+				Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
+			})
+			if !dryRun {
+				path := filepath.Join(cfg.RepoDir, "rules", entry.Category, entry.Slug+".json")
+				if _, err := os.Stat(path); err == nil {
+					if err := backupFile(path, cfg.RepoDir); err != nil {
+						return nil, err
+					}
+					if err := os.Remove(path); err != nil {
+						return nil, fmt.Errorf("remove %s: %w", path, err)
+					}
+				}
+				state.Forget(inst.QuiInstanceID, quiID)
+				removalsDirty = true
+			}
+		}
+		if !dryRun && removalsDirty {
+			if err := state.Save(cfg.RepoDir); err != nil {
+				return nil, fmt.Errorf("save state after removals (instance %d): %w", inst.QuiInstanceID, err)
+			}
+		}
+	}
+
+	if !dryRun && !diff.Empty() {
+		if err := AppendChangelog(cfg.RepoDir, diff, time.Now()); err != nil {
+			return nil, err
+		}
+	}
+
+	// Deterministic order in reports.
+	sortDiffSlices(diff)
+
+	return diff, nil
+}
+
+// buildRuleFile converts a Qui Automation into the upstream file representation:
+// - strips user-specific fields (trackerPattern, intervalSeconds, ...)
+// - injects _slug and optional _description
+// - applies reverse mappings (v0.1: placeholder; full impl in v0.2)
+func buildRuleFile(r Automation, slug string, cfg *Config, sortOrder int) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(r.Raw, &obj); err != nil {
+		return nil, err
+	}
+
+	stripFields := cfg.StripFields
+	if len(stripFields) == 0 {
+		stripFields = DefaultStripFields()
+	}
+	for _, f := range stripFields {
+		delete(obj, f)
+	}
+
+	// Always set the effective sortOrder (user override or Qui's value).
+	obj["sortOrder"] = sortOrder
+
+	// Build an ordered output with stable key ordering.
+	out := map[string]any{
+		"_slug": slug,
+	}
+	if desc, _ := obj["_description"].(string); desc != "" {
+		out["_description"] = desc
+	}
+	// Copy remaining keys.
+	for k, v := range obj {
+		if k == "_slug" {
+			continue
+		}
+		out[k] = v
+	}
+
+	// TODO(v0.2): apply cfg.ReverseMappings to tags/categories/paths inside conditions.
+	_ = cfg.ReverseMappings
+
+	// Marshal with stable ordering. Go's encoding/json sorts map keys, which
+	// gives us deterministic output.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(out); err != nil {
+		return nil, err
+	}
+	// Trim trailing newline added by Encode for consistency.
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
+}
+
+// jsonEqualExceptName compares two JSON byte slices for semantic equality after
+// removing the top-level "name" field from both. Used to detect pure renames
+// (where only the name changed) so they're not double-reported as Updated.
+func jsonEqualExceptName(a, b []byte) bool {
+	stripName := func(in []byte) []byte {
+		var obj map[string]any
+		if err := json.Unmarshal(in, &obj); err != nil {
+			return in
+		}
+		delete(obj, "name")
+		out, _ := json.Marshal(obj)
+		return out
+	}
+	return jsonEqual(stripName(a), stripName(b))
+}
+
+// jsonEqual compares two JSON byte slices for semantic equality (ignores whitespace).
+func jsonEqual(a, b []byte) bool {
+	var av, bv any
+	if err := json.Unmarshal(a, &av); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(b, &bv); err != nil {
+		return false
+	}
+	return deepEqualJSON(av, bv)
+}
+
+func deepEqualJSON(a, b any) bool {
+	switch av := a.(type) {
+	case map[string]any:
+		bv, ok := b.(map[string]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for k, v := range av {
+			if !deepEqualJSON(v, bv[k]) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		bv, ok := b.([]any)
+		if !ok || len(av) != len(bv) {
+			return false
+		}
+		for i := range av {
+			if !deepEqualJSON(av[i], bv[i]) {
+				return false
+			}
+		}
+		return true
+	default:
+		return a == b
+	}
+}
+
+// backupFile moves a file into <repo>/backup/ with a date suffix.
+// If multiple runs on the same day, appends -1, -2, etc.
+func backupFile(src, repoDir string) error {
+	backupDir := filepath.Join(repoDir, "backup")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return err
+	}
+	base := filepath.Base(src)
+	slug := strings.TrimSuffix(base, filepath.Ext(base))
+	ext := filepath.Ext(base)
+	date := time.Now().Format("2006-01-02")
+	dst := filepath.Join(backupDir, fmt.Sprintf("%s-%s%s", slug, date, ext))
+	for i := 1; ; i++ {
+		if _, err := os.Stat(dst); os.IsNotExist(err) {
+			break
+		}
+		dst = filepath.Join(backupDir, fmt.Sprintf("%s-%s-%d%s", slug, date, i, ext))
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, data, 0o644)
+}
+
+// CleanBackups deletes backup files older than retentionDays.
+func CleanBackups(repoDir string, retentionDays int) (int, error) {
+	if retentionDays <= 0 {
+		return 0, nil
+	}
+	backupDir := filepath.Join(repoDir, "backup")
+	entries, err := os.ReadDir(backupDir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	count := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			if err := os.Remove(filepath.Join(backupDir, e.Name())); err == nil {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
+func sortDiffSlices(d *ExportDiff) {
+	sortByCategorySlug := func(s []DiffEntry) {
+		sort.Slice(s, func(i, j int) bool {
+			if s[i].Category != s[j].Category {
+				return s[i].Category < s[j].Category
+			}
+			return s[i].Slug < s[j].Slug
+		})
+	}
+	sortByCategorySlug(d.Added)
+	sortByCategorySlug(d.Updated)
+	sortByCategorySlug(d.Removed)
+	sortByCategorySlug(d.Renamed)
+}

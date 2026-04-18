@@ -1,0 +1,170 @@
+# qui-sync configuration — full reference
+#
+# Copy the section matching your use case (maintainer or consumer) into your
+# own config.yml. Defaults are marked. Commented-out fields use their default
+# when omitted — uncomment only to override.
+#
+# Variables that say "v0.2+" are reserved for future releases; they parse in
+# v0.1 but are not yet used.
+
+# =========================================================================
+# REQUIRED: mode
+# =========================================================================
+# Which side of the workflow this config runs. There is no default — must be set.
+#
+#   maintainer  — reads automations from Qui and writes them to a git repo
+#   consumer    — reads from an upstream repo and pushes them to Qui (v0.2+)
+mode: maintainer
+
+
+# =========================================================================
+# REQUIRED: qui
+# =========================================================================
+# Connection to the Qui instance this config talks to.
+qui:
+  # Full base URL of Qui. No trailing slash.
+  url: http://your-qui-host:7476
+
+  # API key, inline. NOT recommended — use api_key_file instead.
+  # api_key: "xxxxxxxxxxxx"
+
+  # Path to a file containing the API key on a single line. Preferred.
+  # Supports ~ expansion. The file should be chmod 600 and not committed to git.
+  # IMPORTANT: use the full API key from Qui Settings → API Keys.
+  # Do NOT use a Client Proxy API Key — those have limited permissions
+  # and will fail when qui-sync tries to create or update automations.
+  api_key_file: /config/api-key
+
+
+# =========================================================================
+# MAINTAINER mode
+# =========================================================================
+# Settings used when mode: maintainer. Ignored in consumer mode.
+
+# REQUIRED: where the share-repo lives on disk.
+# Exported rule files are written under <repo_dir>/rules/<category>/.
+# State is kept in <repo_dir>/.qui-sync/maintainer.state.json.
+# Backups go in <repo_dir>/backup/.
+repo_dir: /data
+
+# REQUIRED: which Qui instances to export, and which category folder each maps to.
+# Each instance becomes a subfolder of <repo_dir>/rules/.
+# You can have more than one instance per category (merged), but normally 1:1.
+export_instances:
+  - qui_instance_id: 2
+    category: movies
+  - qui_instance_id: 3
+    category: tv
+  - qui_instance_id: 1
+    category: misc
+
+# OPTIONAL: strip_fields — list of JSON keys to remove from each exported rule file.
+# If omitted, the built-in default list is used (see DefaultStripFields in config.go):
+#   id, instanceId, createdAt, updatedAt,            (identity/timestamps)
+#   trackerPattern, trackerDomains,                  (consumer-owned: trackers)
+#   intervalSeconds, sortOrder, freeSpaceSource,     (consumer-owned: execution)
+#   enabled, dryRun, notify                          (consumer-owned: toggles)
+#
+# Override only if you want to keep some of these in the upstream repo.
+# Example: keep `enabled` so upstream dictates default on/off state.
+# strip_fields:
+#   - id
+#   - instanceId
+#   - createdAt
+#   - updatedAt
+#   - trackerPattern
+#   - trackerDomains
+#   - intervalSeconds
+#   - sortOrder
+#   - freeSpaceSource
+#   # - enabled     # keep if upstream should ship default on/off
+#   # - dryRun
+#   # - notify
+
+# OPTIONAL: reverse_mappings — applied on export to translate your local names
+# into canonical names in the repo. Lets you use local-specific tag/category/path
+# names in Qui while shipping canonical names upstream for others to consume.
+# v0.2+: not yet applied in v0.1.
+# reverse_mappings:
+#   tags:
+#     nohardlink: noHL            # your local "nohardlink" → canonical "noHL"
+#   categories:
+#     radarr: movies
+#     sonarr: tv
+#   paths:
+#     /mnt/user/downloads/qbit/: /downloads/
+
+# OPTIONAL: backup — controls how previous versions of changed/removed rules
+# are archived in <repo_dir>/backup/.
+backup:
+  # Delete backup files older than this many days when `qui-sync clean-backups`
+  # runs. 0 disables cleanup. Default: 0.
+  retention_days: 90
+
+  # When `qui-sync init` scaffolds the repo, add `backup/` to .gitignore.
+  # Default: false. Set to true if you don't want backups pushed to GitHub.
+  gitignored: true
+
+
+# =========================================================================
+# CONSUMER mode (v0.2+ — not yet active in v0.1)
+# =========================================================================
+# Everything below is parsed but unused until v0.2 ships consumer-side apply.
+# Shown here so you know the full surface.
+
+# REQUIRED (consumer): which upstream repo to pull from.
+# source:
+#   repo: https://github.com/prophetse7en/qui-automations
+#   ref: main             # branch, tag, or commit sha
+
+# REQUIRED (consumer): which Qui instances to apply to, and which
+# category folders to pull for each. An instance can pull multiple categories
+# (e.g. combined movies+tv instance).
+# apply_instances:
+#   - qui_instance_id: 1
+#     categories: [movies]
+#   - qui_instance_id: 2
+#     categories: [tv]
+#   # - qui_instance_id: 3
+#   #   categories: [movies, tv]   # combined instance
+
+# OPTIONAL: mappings — translate canonical names in upstream to your local names.
+# Forward direction of reverse_mappings above.
+# mappings:
+#   tags:
+#     noHL: nohardlink
+#     Tier1: tracker-tier-1
+#   categories:
+#     movies: radarr
+#     tv: sonarr
+#   paths:
+#     /downloads/: /mnt/user/downloads/qbit/
+
+# OPTIONAL: new_rule_defaults — applied to rules that appear in upstream but
+# not yet in your Qui. Safe defaults encourage review before activation.
+# new_rule_defaults:
+#   enabled: false            # require manual activation per rule
+#   dryRun: false
+#   intervalSeconds: 900      # 15-minute default check interval
+
+# OPTIONAL: per_rule_overrides — always win for listed fields, on every apply.
+# Keyed by slug. Use for rules you've tuned locally.
+# per_rule_overrides:
+#   delete-nohl-tier1-21d:
+#     enabled: true
+#     trackerPattern: "hdbits.org,blutopia.xyz"
+#   tag-tier1-trackers:
+#     enabled: true
+
+# OPTIONAL: orphan_behavior — what to do with rules that exist locally but
+# disappeared from upstream.
+#   disable (default)   — set enabled=false in Qui, leave the rule in place
+#   delete              — remove via Qui API (dangerous — off by default)
+#   warn                — do nothing, but log a warning on each apply
+# orphan_behavior: disable
+
+# OPTIONAL: notifications — sent after each apply.
+# notifications:
+#   discord_webhook: ""
+#   on_apply: summary         # summary | verbose | off
+#   on_no_changes: false      # if false, silent when nothing changed

@@ -1,0 +1,6 @@
+/qui-sync
+/qui-sync-server
+/dist/
+*.test
+*.out
+.DS_Store

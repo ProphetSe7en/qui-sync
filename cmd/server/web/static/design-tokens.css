@@ -1,0 +1,551 @@
+/* qui-sync design tokens
+   Shared palette + typography scale, based on Clonarr's UI.
+   WCAG AA verified against --bg-base (#0f1117):
+     --text-primary   ~14:1   ✅ AAA
+     --text-secondary ~11:1   ✅ AAA
+     --text-muted      ~7.5:1 ✅ AAA
+     --text-dim        ~5.5:1 ✅ AA
+   Do not add text colors darker than --text-dim. */
+
+:root {
+  /* Typography scale (default). */
+  --font-xs:   12px;   /* badges, meta, mono */
+  --font-sm:   13px;   /* secondary body */
+  --font-base: 14px;   /* primary body */
+  --font-md:   15px;   /* tab labels, table headers */
+  --font-lg:   18px;   /* section titles */
+  --font-xl:   22px;   /* page titles */
+
+  /* Line height. */
+  --lh-tight:  1.3;
+  --lh-normal: 1.5;
+
+  /* Text colors. */
+  --text-primary:   #e1e4e8;
+  --text-secondary: #c9d1d9;
+  --text-muted:     #aaaaaa;
+  --text-dim:       #8b949e;
+
+  /* Surfaces. */
+  --bg-base:     #0f1117;
+  --bg-elevated: #161b22;
+  --bg-raised:   #21262d;
+  --bg-inset:    #1c2129;
+  --border:      #30363d;
+  --border-subtle: #21262d;
+
+  /* Accents. */
+  --accent-blue:   #58a6ff;
+  --accent-green:  #3fb950;
+  --accent-amber:  #d29922;
+  --accent-red:    #f85149;
+
+  /* Accent backgrounds (for badges, tinted rows). */
+  --accent-blue-bg:  #1f3a5f;
+  --accent-green-bg: #1a3a1a;
+  --accent-amber-bg: #3d2e0a;
+  --accent-red-bg:   #3d1a1a;
+
+  /* Radius, spacing. */
+  --radius-sm: 4px;
+  --radius:    6px;
+  --radius-lg: 10px;
+
+  /* Font family. */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'SF Mono', Monaco, 'Cascadia Code', Consolas, monospace;
+}
+
+/* Scale presets — multiplier applied uniformly via overrides.
+   Toggle by setting data-scale on <body>. */
+body[data-scale="compact"] {
+  --font-xs:   11px;
+  --font-sm:   12px;
+  --font-base: 13px;
+  --font-md:   14px;
+  --font-lg:   16px;
+  --font-xl:   20px;
+}
+body[data-scale="large"] {
+  --font-xs:   13px;
+  --font-sm:   15px;
+  --font-base: 16px;
+  --font-md:   17px;
+  --font-lg:   20px;
+  --font-xl:   24px;
+}
+
+/* Reset + base. */
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: var(--font-base);
+  line-height: var(--lh-normal);
+  min-height: 100vh;
+}
+a { color: var(--accent-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, pre { font-family: var(--font-mono); font-size: var(--font-xs); }
+
+/* Dev warning banner */
+.dev-banner {
+  background: var(--accent-amber-bg);
+  border-bottom: 1px solid var(--accent-amber);
+  color: var(--accent-amber);
+  padding: 8px 20px;
+  font-size: var(--font-sm);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dev-banner-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--accent-amber);
+  cursor: pointer;
+  font-size: var(--font-md);
+  padding: 0 4px;
+}
+
+/* Utility primitives used across tabs. */
+.hidden { display: none !important; }
+.muted  { color: var(--text-muted); }
+.dim    { color: var(--text-dim); }
+
+/* Top nav. */
+.topnav {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 20px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.topnav .logo {
+  font-size: var(--font-lg);
+  font-weight: 700;
+  color: var(--accent-blue);
+  margin-right: 32px;
+  letter-spacing: -0.5px;
+}
+.topnav .tabs { display: flex; height: 100%; }
+.topnav .tab {
+  padding: 0 20px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  font-size: var(--font-md);
+  font-weight: 500;
+  transition: color 0.15s, border-color 0.15s;
+  user-select: none;
+}
+.topnav .tab:hover { color: var(--text-primary); }
+.topnav .tab.active {
+  color: var(--text-primary);
+  border-bottom-color: var(--accent-blue);
+}
+.topnav .right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+/* Layout. */
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+.page-title {
+  font-size: var(--font-xl);
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.page-subtitle {
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+  margin: 0 0 24px;
+}
+
+/* Panels. */
+.panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.panel-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.panel-title {
+  font-size: var(--font-md);
+  font-weight: 600;
+}
+.panel-body { padding: 16px; }
+
+/* Buttons. */
+.btn {
+  padding: 6px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text-primary);
+  font-size: var(--font-xs);
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+  font-family: inherit;
+}
+.btn:hover { background: #2d333b; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn-primary {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #0d1117;
+}
+.btn-primary:hover { background: #4a8fd9; border-color: #4a8fd9; }
+.btn-danger {
+  background: var(--accent-red-bg);
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+/* Badges. */
+.badge {
+  display: inline-block;
+  font-size: var(--font-xs);
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--bg-raised);
+  color: var(--text-muted);
+}
+.badge-blue  { background: var(--accent-blue-bg);  color: var(--accent-blue);  }
+.badge-green { background: var(--accent-green-bg); color: var(--accent-green); }
+.badge-amber { background: var(--accent-amber-bg); color: var(--accent-amber); }
+.badge-red   { background: var(--accent-red-bg);   color: var(--accent-red);   }
+
+/* Status dot. */
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.dot-ok   { background: var(--accent-green); }
+.dot-warn { background: var(--accent-amber); }
+.dot-err  { background: var(--accent-red);   }
+.dot-idle { background: var(--text-dim);     }
+
+/* Tables. */
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-sm);
+}
+.table th {
+  text-align: left;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: var(--font-xs);
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+}
+.table tr:last-child td { border-bottom: none; }
+.table tr:hover td { background: rgba(255,255,255,0.02); }
+
+/* Forms. */
+label { font-size: var(--font-sm); color: var(--text-secondary); }
+.input, select, textarea {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-size: var(--font-sm);
+  font-family: inherit;
+}
+.input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+/* Empty state. */
+.empty {
+  padding: 48px 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--font-sm);
+}
+
+/* Diff-line colors for export preview. */
+.diff-add    { color: var(--accent-green); }
+.diff-update { color: var(--accent-blue);  }
+.diff-rename { color: var(--accent-amber); }
+.diff-remove { color: var(--accent-red);   }
+.diff-move   { color: var(--accent-amber); }
+
+/* Expandable instance rows. */
+.instance-row { border-bottom: 1px solid var(--border-subtle); }
+.instance-row:last-child { border-bottom: none; }
+.instance-row.instance-dimmed .instance-head > *:not(button) { opacity: 0.55; }
+.btn-sm { padding: 3px 10px; font-size: var(--font-xs); }
+.category-badge { cursor: pointer; transition: filter 0.15s; }
+.category-badge:hover { filter: brightness(1.15); }
+/* Shared grid columns so header labels and rows line up. */
+.instance-grid {
+  display: grid;
+  grid-template-columns: 18px 220px 180px 140px 1fr;
+  align-items: center;
+  gap: 16px;
+}
+.instance-head {
+  padding: 12px 16px;
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--font-sm);
+}
+.instance-head > * { min-width: 0; }
+.instance-header-row {
+  padding: 8px 16px;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-base);
+}
+.instance-status { display: flex; align-items: center; gap: 12px; justify-content: flex-end; }
+.instance-head:hover { background: rgba(255,255,255,0.02); }
+.instance-id  { font-weight: 500; }
+.instance-meta { color: var(--text-muted); white-space: nowrap; }
+.instance-status { font-size: var(--font-xs); color: var(--text-muted); }
+.chev { color: var(--text-dim); transition: transform 0.15s; display: inline-block; }
+.chev-open { transform: rotate(90deg); }
+.instance-body { background: var(--bg-base); padding: 8px 16px 16px; }
+
+.rule-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 12px;
+}
+.rule-table tbody tr.rule-excluded td { opacity: 0.55; }
+.rule-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-blue);
+  cursor: pointer;
+}
+.priority-cell { display: flex; align-items: center; gap: 4px; }
+.priority-input {
+  width: 56px;
+  padding: 3px 6px;
+  font-size: var(--font-xs);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+.priority-reset {
+  background: none;
+  border: none;
+  color: var(--accent-amber);
+  cursor: pointer;
+  font-size: var(--font-sm);
+  padding: 0 4px;
+  line-height: 1;
+}
+.priority-reset:hover { color: var(--text-primary); }
+
+/* Keyboard focus — explicit so browsers that suppress the default outline
+   don't leave keyboard users guessing. */
+.btn:focus-visible,
+.input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.topnav .tab:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+/* Toasts — lightweight error/info surface for background operations. */
+.toasts {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 3000;
+  max-width: 520px;
+  width: max-content;
+}
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: var(--font-sm);
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  animation: toast-in 0.15s ease-out;
+}
+.toast-error { border-color: var(--accent-red);   background: var(--accent-red-bg);   color: var(--accent-red);   }
+.toast-warn  { border-color: var(--accent-amber); background: var(--accent-amber-bg); color: var(--accent-amber); }
+.toast-info  { border-color: var(--accent-blue);  background: var(--accent-blue-bg);  color: var(--accent-blue);  }
+.toast-close {
+  margin-left: auto;
+  font-size: var(--font-md);
+  opacity: 0.6;
+}
+.toast:hover .toast-close { opacity: 1; }
+@keyframes toast-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to   { transform: translateY(0);   opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast { animation: none; }
+}
+
+/* Confirm modal. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+.modal {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  width: 440px;
+  max-width: calc(100vw - 32px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+}
+.modal-title {
+  font-size: var(--font-md);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.modal-body {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  line-height: var(--lh-normal);
+  margin-bottom: 18px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* Two-column form layout used in Settings tab. */
+.form-grid {
+  display: grid;
+  grid-template-columns: 140px minmax(200px, 520px);
+  gap: 10px 16px;
+  align-items: center;
+  max-width: 680px;
+}
+.form-grid label {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  text-align: right;
+}
+.form-grid .input { width: 100%; }
+/* Standalone checkboxes in form-grid should sit flush left, not stretch. */
+.form-grid input[type="checkbox"] {
+  justify-self: start;
+}
+
+/* Read-only key/value list — used by System panel. Replaces a <table> that
+   used to split columns 50/50 and pushed values far to the right. */
+.kv-list {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 8px 16px;
+  margin: 0;
+  font-size: var(--font-sm);
+  max-width: 680px;
+}
+.kv-list dt {
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-size: var(--font-xs);
+}
+.kv-list dd { margin: 0; color: var(--text-secondary); }
+
+/* Sync tab — subscription row grid. */
+.sub-head {
+  display: grid;
+  grid-template-columns: 18px 180px 1fr 180px auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  cursor: pointer;
+  font-size: var(--font-sm);
+}
+.sub-head > * { min-width: 0; }
+.sub-name { font-weight: 500; }
+.sub-url {
+  font-family: var(--font-mono);
+  font-size: var(--font-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sub-meta { color: var(--text-muted); white-space: nowrap; }
+.sub-actions { display: flex; gap: 6px; }
+
+.sub-toolbar {
+  display: flex;
+  align-items: center;
+  padding: 12px 16px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+/* Help panels — dismissible how-to at top of tab */
+.help-panel { border-color: var(--accent-blue-bg); }
+.help-panel .panel-body { background: var(--bg-inset); }
+.help-panel b { color: var(--text-primary); }
+.help-panel code { background: var(--bg-raised); padding: 1px 5px; border-radius: 3px; }
+
+.plan-table { font-size: var(--font-sm); }
+.plan-table select { background: var(--bg-elevated); }
