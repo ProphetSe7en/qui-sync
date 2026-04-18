@@ -150,6 +150,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/subscriptions/{slug}/rules/auto-sync", s.handleSetRuleAutoSync)
 	mux.HandleFunc("PUT /api/config/auto-pull-interval", s.handleSetAutoPullInterval)
 	mux.HandleFunc("PUT /api/config/push-token", s.handleSavePushToken)
+	mux.HandleFunc("PUT /api/config/git-remote", s.handleSetGitRemote)
+	mux.HandleFunc("GET /api/config/git-remote", s.handleGetGitRemote)
 	mux.HandleFunc("PUT /api/config/qui", s.handleUpdateQuiConfig)
 	mux.HandleFunc("PUT /api/config/backup", s.handleUpdateBackupConfig)
 	mux.HandleFunc("GET /api/qui-instances", s.handleListQuiInstances)

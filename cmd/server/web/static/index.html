@@ -566,23 +566,33 @@
 
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">Git push</div>
+        <div class="panel-title">Share-repo (git)</div>
       </div>
       <div class="panel-body">
         <div class="form-grid">
+          <label>Remote URL</label>
+          <div>
+            <input class="input" x-model="gitRemoteDraft"
+                   placeholder="https://github.com/you/qui-automations.git"
+                   autocomplete="off" spellcheck="false">
+            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
+              The GitHub repo where your exported rules are pushed. qui-sync auto-initializes git in <code>/data/repo/</code> if needed.
+            </div>
+          </div>
           <label>Push token</label>
           <div>
             <input class="input" type="password" x-model="pushTokenDraft"
-                   placeholder="GitHub PAT for pushing your share-repo"
+                   placeholder="GitHub fine-grained PAT"
                    autocomplete="new-password" data-1p-ignore data-lpignore="true">
             <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
-              Stored at <code>/config/git-push-token</code> (0600). Used by the Push button in the Export tab.
-              Create a <b>fine-grained PAT</b> with Contents: Read+Write on your share-repo.
+              Create a <b>fine-grained PAT</b> on GitHub with <b>Contents: Read+Write</b> permission scoped to your share-repo. Leave blank to keep existing token.
             </div>
           </div>
         </div>
-        <div style="margin-top:12px">
-          <button class="btn btn-primary" @click="savePushToken()">Save</button>
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center">
+          <button class="btn btn-primary" @click="saveGitConfig()">Save</button>
+          <span x-show="gitRemoteStatus === 'ok'" style="color:var(--accent-green); font-size:var(--font-sm)">● Configured</span>
+          <span x-show="gitRemoteStatus === 'none'" class="dim" style="font-size:var(--font-sm)">Not configured yet</span>
         </div>
       </div>
     </div>

@@ -167,6 +167,57 @@ func runGitSilent(ctx context.Context, dir string, env []string, args ...string)
 	return err
 }
 
+// SetupGitRepo initializes a git repo at repoDir (if not already) and
+// sets the origin remote URL. Idempotent — safe to call multiple times.
+func SetupGitRepo(ctx context.Context, repoDir, remoteURL string) error {
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		return err
+	}
+
+	// Init if not already a git repo.
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); os.IsNotExist(err) {
+		if _, err := runGit(ctx, repoDir, nil, "init"); err != nil {
+			return fmt.Errorf("git init: %w", err)
+		}
+		_ = runGitSilent(ctx, repoDir, nil, "config", "user.name", "qui-sync")
+		_ = runGitSilent(ctx, repoDir, nil, "config", "user.email", "qui-sync@local")
+		_ = runGitSilent(ctx, repoDir, nil, "checkout", "-b", "main")
+	}
+
+	// Set or update origin.
+	existing, err := runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
+	if err != nil || strings.TrimSpace(existing) == "" {
+		// No origin yet — add it.
+		_, err = runGit(ctx, repoDir, nil, "remote", "add", "origin", remoteURL)
+	} else {
+		// Origin exists — update URL.
+		_, err = runGit(ctx, repoDir, nil, "remote", "set-url", "origin", remoteURL)
+	}
+	if err != nil {
+		return fmt.Errorf("set remote: %w", err)
+	}
+
+	// Create initial .gitignore if missing.
+	giPath := filepath.Join(repoDir, ".gitignore")
+	if _, err := os.Stat(giPath); os.IsNotExist(err) {
+		_ = os.WriteFile(giPath, []byte(""), 0o644)
+	}
+
+	return nil
+}
+
+// GetGitRemote returns the origin URL of the repo, or error if not configured.
+func GetGitRemote(ctx context.Context, repoDir string) (string, error) {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return "", fmt.Errorf("not a git repo")
+	}
+	out, err := runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // RepoStatus returns the sync state of a git repo against its remote.
 type RepoStatus struct {
 	Clean        bool   `json:"clean"`          // no uncommitted changes

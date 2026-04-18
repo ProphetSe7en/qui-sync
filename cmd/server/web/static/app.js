@@ -54,6 +54,8 @@ function quiSyncApp() {
     pushingRepo: false,
     pullingRepo: false,
     pushTokenDraft: '',
+    gitRemoteDraft: '',
+    gitRemoteStatus: '',  // '' | 'ok' | 'none'
     testingQui: false,
     quiTestResult: '',  // '' | 'ok' | 'fail'
     quiTestError: '',
@@ -66,6 +68,7 @@ function quiSyncApp() {
       this.loadChangelog();
       this.loadSubscriptions();
       this.loadRepoStatus();
+      this.loadGitRemote();
       this.loadBackups();
       setInterval(() => this.ping(), 30000);
     },
@@ -895,6 +898,41 @@ function quiSyncApp() {
         this.toast('error', 'Push failed: ' + e.message);
       } finally {
         this.pushingRepo = false;
+      }
+    },
+
+    async loadGitRemote() {
+      try {
+        const r = await this.apiFetch('/api/config/git-remote');
+        this.gitRemoteStatus = r.configured ? 'ok' : 'none';
+        if (r.url) this.gitRemoteDraft = r.url;
+      } catch (_) {
+        this.gitRemoteStatus = 'none';
+      }
+    },
+
+    async saveGitConfig() {
+      try {
+        if (this.gitRemoteDraft) {
+          await this.apiFetch('/api/config/git-remote', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: this.gitRemoteDraft }),
+          });
+        }
+        if (this.pushTokenDraft) {
+          await this.apiFetch('/api/config/push-token', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: this.pushTokenDraft }),
+          });
+          this.pushTokenDraft = '';
+        }
+        await this.loadGitRemote();
+        await this.loadRepoStatus();
+        this.toast('info', 'Git config saved.');
+      } catch (e) {
+        this.toast('error', 'Save failed: ' + e.message);
       }
     },
 

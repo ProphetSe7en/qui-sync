@@ -404,6 +404,40 @@ func (s *Server) handleSavePushToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]string{"status": "saved"})
 }
 
+// ---- git remote setup ----
+
+type gitRemoteReq struct {
+	URL string `json:"url"`
+}
+
+func (s *Server) handleSetGitRemote(w http.ResponseWriter, r *http.Request) {
+	var req gitRemoteReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.URL == "" {
+		writeErr(w, 400, fmt.Errorf("url is required"))
+		return
+	}
+	cfg := s.getConfig()
+	if err := core.SetupGitRepo(r.Context(), cfg.Paths().Repo, req.URL); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok", "url": req.URL})
+}
+
+func (s *Server) handleGetGitRemote(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	url, err := core.GetGitRemote(r.Context(), cfg.Paths().Repo)
+	if err != nil {
+		writeJSON(w, 200, map[string]any{"configured": false, "url": ""})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"configured": true, "url": url})
+}
+
 // ---- helper for the UI's link-to-existing dropdown ----
 
 type quiRuleBrief struct {
