@@ -286,6 +286,48 @@
             </div>
           </div>
         </template>
+
+        <!-- Edit-note affordance: after a successful (non-dry) export
+             the maintainer might realise the note had a typo. Rewrites
+             today's CHANGELOG.md section and creates a follow-up git
+             commit. Push is still manual. -->
+        <template x-if="diff && !diff.empty && !diff.dry_run">
+          <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border)">
+            <template x-if="!editingExportNote">
+              <div style="display:flex; align-items:center; gap:8px; font-size:var(--font-xs)">
+                <button class="btn btn-sm" @click="openEditExportNote()"
+                        title="Edit the note attached to today's CHANGELOG.md entry — creates a follow-up git commit. Use this to fix a typo without re-running the whole export.">
+                  Edit note
+                </button>
+                <span class="dim">Typo in the note? Edit it without re-running export.</span>
+              </div>
+            </template>
+            <template x-if="editingExportNote">
+              <div>
+                <label for="edit-export-note" style="display:block; font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; color:var(--text-secondary); margin-bottom:4px">
+                  Edit note — today's CHANGELOG entry
+                </label>
+                <textarea id="edit-export-note" class="input"
+                          x-model="editExportNoteDraft"
+                          rows="3"
+                          placeholder="Leave blank to remove the note paragraph entirely."
+                          style="width:100%; font-family:var(--font-body); font-size:var(--font-sm); resize:vertical"></textarea>
+                <div style="display:flex; gap:8px; margin-top:8px">
+                  <button class="btn btn-primary btn-sm" @click="saveEditExportNote()"
+                          :disabled="savingExportNote">
+                    <span x-show="!savingExportNote">Save note</span>
+                    <span x-show="savingExportNote">Saving…</span>
+                  </button>
+                  <button class="btn btn-sm" @click="cancelEditExportNote()"
+                          :disabled="savingExportNote">Cancel</button>
+                  <span class="dim" style="font-size:var(--font-xs); align-self:center">
+                    Saves a follow-up commit — push when ready.
+                  </span>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
       </div>
     </div>
 

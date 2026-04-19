@@ -5,141 +5,242 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-// TestWriteChangelogNoteFreshFile covers the "no prior CHANGELOG_NOTES.md"
-// path — the helper must create the file with a single section.
-func TestWriteChangelogNoteFreshFile(t *testing.T) {
-	dir := t.TempDir()
-	if err := WriteChangelogNote(dir, "2026-04-19", "added HDBits to Tier 1"); err != nil {
-		t.Fatalf("WriteChangelogNote: %v", err)
-	}
-	got, err := os.ReadFile(filepath.Join(dir, "CHANGELOG_NOTES.md"))
+func readChangelog(t *testing.T, dir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, "CHANGELOG.md"))
 	if err != nil {
-		t.Fatalf("read back: %v", err)
+		t.Fatalf("read CHANGELOG.md: %v", err)
 	}
-	want := "## 2026-04-19\n\nadded HDBits to Tier 1\n"
-	if string(got) != want {
-		t.Errorf("fresh write:\n got: %q\nwant: %q", got, want)
+	return string(data)
+}
+
+// TestAppendChangelogFreshFile covers the "no prior CHANGELOG.md" path
+// — the helper must create the file with header + a single section.
+func TestAppendChangelogFreshFile(t *testing.T) {
+	dir := t.TempDir()
+	diff := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	if err := AppendChangelog(dir, diff, when, "added HDBits to Tier 1"); err != nil {
+		t.Fatalf("AppendChangelog: %v", err)
+	}
+	got := readChangelog(t, dir)
+	if !strings.Contains(got, "## 2026-04-19") {
+		t.Errorf("section heading missing:\n%s", got)
+	}
+	if !strings.Contains(got, "added HDBits to Tier 1") {
+		t.Errorf("note missing:\n%s", got)
+	}
+	if !strings.Contains(got, "### Added") {
+		t.Errorf("group heading missing:\n%s", got)
 	}
 }
 
-// TestWriteChangelogNoteReplacesExisting confirms that writing a note
-// for a date that already has a section REPLACES the old content rather
-// than duplicating it.
-func TestWriteChangelogNoteReplacesExisting(t *testing.T) {
+// TestAppendChangelogNoNote — empty note string must render cleanly
+// without an empty paragraph.
+func TestAppendChangelogNoNote(t *testing.T) {
 	dir := t.TempDir()
-	initial := "## 2026-04-19\n\nfirst version\n"
-	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG_NOTES.md"), []byte(initial), 0o644); err != nil {
+	diff := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	if err := AppendChangelog(dir, diff, when, ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteChangelogNote(dir, "2026-04-19", "second version"); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := os.ReadFile(filepath.Join(dir, "CHANGELOG_NOTES.md"))
-	if strings.Contains(string(got), "first version") {
-		t.Errorf("old content not replaced:\n%s", got)
-	}
-	if !strings.Contains(string(got), "second version") {
-		t.Errorf("new content missing:\n%s", got)
+	got := readChangelog(t, dir)
+	// After "## 2026-04-19\n\n" the next non-blank content should be
+	// "### Added" with no stray note paragraph in between.
+	want := "## 2026-04-19\n\n### Added\n"
+	if !strings.Contains(got, want) {
+		t.Errorf("expected %q in file, got:\n%s", want, got)
 	}
 }
 
-// TestWriteChangelogNotePrependsNewest confirms that a new date section
-// goes to the TOP of the file, matching CHANGELOG.md's ordering.
-func TestWriteChangelogNotePrependsNewest(t *testing.T) {
+// TestAppendChangelogSameDayReplaces — running export twice on the
+// same day must end with a single section, not two stacked entries.
+// The second run's diff + note wins.
+func TestAppendChangelogSameDayReplaces(t *testing.T) {
 	dir := t.TempDir()
-	older := "## 2026-04-18\n\nolder note\n"
-	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG_NOTES.md"), []byte(older), 0o644); err != nil {
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	first := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	if err := AppendChangelog(dir, first, when, "first note"); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteChangelogNote(dir, "2026-04-19", "newer note"); err != nil {
+	second := &ExportDiff{Updated: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo (v2)"}}}
+	if err := AppendChangelog(dir, second, when, "second note"); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := os.ReadFile(filepath.Join(dir, "CHANGELOG_NOTES.md"))
-	newerIdx := strings.Index(string(got), "## 2026-04-19")
-	olderIdx := strings.Index(string(got), "## 2026-04-18")
+	got := readChangelog(t, dir)
+	if strings.Count(got, "## 2026-04-19") != 1 {
+		t.Errorf("same-day entries must collapse to one section, got:\n%s", got)
+	}
+	if strings.Contains(got, "first note") {
+		t.Errorf("first note should have been replaced, got:\n%s", got)
+	}
+	if !strings.Contains(got, "second note") {
+		t.Errorf("second note missing:\n%s", got)
+	}
+	if strings.Contains(got, "### Added") {
+		t.Errorf("first diff's Added group should have been replaced by second's Updated:\n%s", got)
+	}
+	if !strings.Contains(got, "### Updated") {
+		t.Errorf("second diff's Updated group missing:\n%s", got)
+	}
+}
+
+// TestAppendChangelogPrependsWhenDateDiffers — a new date always goes
+// to the top, old sections stay intact below.
+func TestAppendChangelogPrependsWhenDateDiffers(t *testing.T) {
+	dir := t.TempDir()
+	older := time.Date(2026, 4, 18, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	diff := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	if err := AppendChangelog(dir, diff, older, "older"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendChangelog(dir, diff, newer, "newer"); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	newerIdx := strings.Index(got, "## 2026-04-19")
+	olderIdx := strings.Index(got, "## 2026-04-18")
 	if newerIdx < 0 || olderIdx < 0 {
-		t.Fatalf("both sections should be present: %s", got)
+		t.Fatalf("both sections should be present:\n%s", got)
 	}
 	if newerIdx > olderIdx {
 		t.Errorf("newer section should come first:\n%s", got)
 	}
-}
-
-// TestWriteChangelogNoteEmptyRemovesSection confirms that passing an
-// empty note removes the date's section, leaving the rest of the file
-// intact.
-func TestWriteChangelogNoteEmptyRemovesSection(t *testing.T) {
-	dir := t.TempDir()
-	initial := "## 2026-04-19\n\nto remove\n\n## 2026-04-18\n\nto keep\n"
-	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG_NOTES.md"), []byte(initial), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteChangelogNote(dir, "2026-04-19", ""); err != nil {
-		t.Fatal(err)
-	}
-	got, _ := os.ReadFile(filepath.Join(dir, "CHANGELOG_NOTES.md"))
-	if strings.Contains(string(got), "to remove") {
-		t.Errorf("target section not removed:\n%s", got)
-	}
-	if !strings.Contains(string(got), "to keep") {
-		t.Errorf("other section should remain:\n%s", got)
+	if !strings.Contains(got, "older") || !strings.Contains(got, "newer") {
+		t.Errorf("both notes should survive:\n%s", got)
 	}
 }
 
-// TestReadManualNotesRoundTrip confirms WriteChangelogNote + readManualNotes
-// play together — whatever we write comes back on read.
-func TestReadManualNotesRoundTrip(t *testing.T) {
+// TestUpdateLatestExportNoteReplaces confirms that editing the top
+// section's note preserves the group lists byte-for-byte.
+func TestUpdateLatestExportNoteReplaces(t *testing.T) {
 	dir := t.TempDir()
-	note := "Updated Tier 1 trackers after HDBits joined.\n\nSee forum thread #123 for context."
-	if err := WriteChangelogNote(dir, "2026-04-19", note); err != nil {
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	diff := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	if err := AppendChangelog(dir, diff, when, "typo heer"); err != nil {
 		t.Fatal(err)
 	}
-	got := readManualNotes(dir, "2026-04-19")
-	if got != note {
-		t.Errorf("round-trip mismatch:\n got: %q\nwant: %q", got, note)
+	if err := UpdateLatestExportNote(dir, "fixed typo here"); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	if strings.Contains(got, "typo heer") {
+		t.Errorf("old note should have been replaced:\n%s", got)
+	}
+	if !strings.Contains(got, "fixed typo here") {
+		t.Errorf("new note missing:\n%s", got)
+	}
+	if !strings.Contains(got, "### Added\n- `foo`") {
+		t.Errorf("Added group must be preserved byte-for-byte:\n%s", got)
 	}
 }
 
-// TestWriteChangelogNoteReplacesHeadingWithExtraText confirms that a
-// hand-edited heading with extra suffix text (e.g. "## 2026-04-19
-// (release)") still matches as the same day's section — writing a new
-// note for that date replaces it rather than duplicating.
-func TestWriteChangelogNoteReplacesHeadingWithExtraText(t *testing.T) {
+// TestUpdateLatestExportNoteEmptyRemoves — passing empty string drops
+// the note paragraph without touching the groups.
+func TestUpdateLatestExportNoteEmptyRemoves(t *testing.T) {
 	dir := t.TempDir()
-	initial := "## 2026-04-19 (release)\n\nhand-edited content\n"
-	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG_NOTES.md"), []byte(initial), 0o644); err != nil {
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	diff := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	if err := AppendChangelog(dir, diff, when, "note to drop"); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteChangelogNote(dir, "2026-04-19", "replacement"); err != nil {
+	if err := UpdateLatestExportNote(dir, "  "); err != nil {
 		t.Fatal(err)
 	}
-	got, _ := os.ReadFile(filepath.Join(dir, "CHANGELOG_NOTES.md"))
-	// Old section (with suffix) should be gone.
-	if strings.Contains(string(got), "(release)") {
+	got := readChangelog(t, dir)
+	if strings.Contains(got, "note to drop") {
+		t.Errorf("note should have been removed:\n%s", got)
+	}
+	// After removal the section should look like a no-note entry.
+	if !strings.Contains(got, "## 2026-04-19\n\n### Added\n") {
+		t.Errorf("expected clean no-note section, got:\n%s", got)
+	}
+}
+
+// TestUpdateLatestExportNoteNoSections — editing fails loud when there
+// is nothing to edit.
+func TestUpdateLatestExportNoteNoSections(t *testing.T) {
+	dir := t.TempDir()
+	if err := UpdateLatestExportNote(dir, "anything"); err == nil {
+		t.Errorf("expected error when CHANGELOG.md is missing")
+	}
+	// Now write a header-only file (no sections).
+	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG.md"), []byte(changelogHeader), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := UpdateLatestExportNote(dir, "anything"); err == nil {
+		t.Errorf("expected error when CHANGELOG.md has no sections")
+	}
+}
+
+// TestCurrentExportNote — round-trips the note back through the API.
+func TestCurrentExportNote(t *testing.T) {
+	dir := t.TempDir()
+	// Missing file → empty string, no error.
+	got, err := CurrentExportNote(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "" {
+		t.Errorf("missing file should return empty, got %q", got)
+	}
+
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	diff := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	if err := AppendChangelog(dir, diff, when, "first note\n\nsecond paragraph"); err != nil {
+		t.Fatal(err)
+	}
+	got, err = CurrentExportNote(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "first note\n\nsecond paragraph"
+	if got != want {
+		t.Errorf("round-trip mismatch:\n got: %q\nwant: %q", got, want)
+	}
+
+	// Empty note → CurrentExportNote returns "".
+	if err := UpdateLatestExportNote(dir, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = CurrentExportNote(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Errorf("after clearing, expected empty, got %q", got)
+	}
+}
+
+// TestAppendChangelogSameDayHeadingWithSuffix — hand-edited heading
+// like "## 2026-04-19 (release)" still counts as the same day and
+// gets replaced.
+func TestAppendChangelogSameDayHeadingWithSuffix(t *testing.T) {
+	dir := t.TempDir()
+	initial := changelogHeader + "\n## 2026-04-19 (release)\n\nhand-edited content\n\n### Added\n- `foo` (tier1) — Foo\n\n"
+	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG.md"), []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	diff := &ExportDiff{Updated: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	if err := AppendChangelog(dir, diff, when, "replacement"); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	if strings.Contains(got, "(release)") {
 		t.Errorf("hand-edited heading survived — should have been replaced:\n%s", got)
 	}
-	if strings.Contains(string(got), "hand-edited content") {
+	if strings.Contains(got, "hand-edited content") {
 		t.Errorf("old content survived:\n%s", got)
 	}
-	if !strings.Contains(string(got), "replacement") {
-		t.Errorf("new content missing:\n%s", got)
+	if !strings.Contains(got, "replacement") {
+		t.Errorf("new note missing:\n%s", got)
 	}
-}
-
-// TestWriteChangelogNoteEmptyOnEmptyFileLeavesNothing ensures the "clear
-// the only section" path removes the file entirely rather than leaving
-// an empty husk.
-func TestWriteChangelogNoteEmptyOnEmptyFileLeavesNothing(t *testing.T) {
-	dir := t.TempDir()
-	if err := WriteChangelogNote(dir, "2026-04-19", "something"); err != nil {
-		t.Fatal(err)
-	}
-	if err := WriteChangelogNote(dir, "2026-04-19", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "CHANGELOG_NOTES.md")); !os.IsNotExist(err) {
-		t.Errorf("file should be removed after clearing its only section, err=%v", err)
+	if strings.Count(got, "## 2026-04-19") != 1 {
+		t.Errorf("must end with a single section for that date:\n%s", got)
 	}
 }

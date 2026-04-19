@@ -123,6 +123,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/rules", s.handleListRules)
 	mux.HandleFunc("POST /api/export/preview", s.handleExportPreview)
 	mux.HandleFunc("POST /api/export/run", s.handleExportRun)
+	mux.HandleFunc("GET /api/export/last-note", s.handleGetLastExportNote)
+	mux.HandleFunc("PUT /api/export/last-note", s.handleUpdateLastExportNote)
 	mux.HandleFunc("GET /api/changelog", s.handleChangelog)
 	mux.HandleFunc("GET /api/repo/status", s.handleRepoStatus)
 	mux.HandleFunc("POST /api/repo/push", s.handleRepoPush)

@@ -102,12 +102,14 @@ When you export a rule, qui-sync transforms it for sharing:
    - `~ Updated (conditions, sortOrder)` — changed rules, with which fields differ
    - `R Renamed` — rules whose name changed in Qui
    - `⌫ Archived` — rules deleted from Qui. These move to `/data/repo/archive/<folder>/<Rule Name>.json` instead of being removed — history stays visible on GitHub. Consumers syncing from your repo never apply archived rules.
-7. (optional) Fill in **Note for this export** — a short explanation of *why* the rules changed. The note becomes the top paragraph of today's entry in `CHANGELOG.md`, above the auto-generated rule list. One note per export; cleared automatically on success.
+7. (optional) Fill in **Note for this export** — a short explanation of *why* the rules changed. The note becomes the top paragraph of today's entry in `CHANGELOG.md`, above the auto-generated rule list. One note per export; cleared automatically on success. The note lives in the UI field only — nothing is saved to disk until you click Commit export.
 8. Click **Commit export** to write the changes:
    - Files are written to `/data/repo/<folder>/<Rule Name>.json` — the same layout used by community-maintained qui automation repos, so your repo is compatible with anyone else using qui-sync
    - A git commit is made automatically
    - Old versions are backed up to `/data/backups/`
    - CHANGELOG.md is updated, with your note at the top of today's entry if you provided one
+   - Running Commit export again the same day REPLACES today's entry instead of stacking a second one — so the latest diff + latest note always wins
+9. (optional) **Fix a typo in your note** — after export, click **Edit note** below the diff. Rewrites today's note paragraph and creates a follow-up git commit (`qui-sync: update export note`) without re-running the export. Push when ready.
 
 ### Pushing to GitHub
 

@@ -756,8 +756,8 @@ func (s *Server) handleExportRun(w http.ResponseWriter, r *http.Request)     { s
 type exportRequest struct {
 	// Note is a free-form markdown paragraph the maintainer can attach
 	// to today's CHANGELOG entry, explaining why the rules changed.
-	// Written to CHANGELOG_NOTES.md before RunExport so AppendChangelog
-	// picks it up during the same export run.
+	// Lives in UI state only — written directly into CHANGELOG.md at
+	// export time. Previews ignore it (nothing is written on dry run).
 	Note string `json:"note,omitempty"`
 }
 
@@ -777,35 +777,12 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 		return
 	}
 
-	// Persist the export note to CHANGELOG_NOTES.md BEFORE running
-	// export, so AppendChangelog (called at the end of RunExport) can
-	// read it back and merge it into today's CHANGELOG section. Only
-	// write on real runs — a preview should not mutate disk.
-	//
-	// If RunExport fails after we've written the note we roll it back
-	// so the file is not stranded on disk without a matching commit.
-	// A stranded note would leak into the next same-day export.
-	today := time.Now().Format("2006-01-02")
-	noteWritten := false
-	if !dryRun && strings.TrimSpace(req.Note) != "" {
-		if err := core.WriteChangelogNote(cfg.Paths().Repo, today, req.Note); err != nil {
-			log.Printf("write changelog note: %v (non-fatal)", err)
-		} else {
-			noteWritten = true
-		}
+	note := ""
+	if !dryRun {
+		note = strings.TrimSpace(req.Note)
 	}
-
-	diff, err := core.RunExport(r.Context(), cfg, client, dryRun)
+	diff, err := core.RunExport(r.Context(), cfg, client, dryRun, note)
 	if err != nil {
-		if noteWritten {
-			// Roll back — the note was written but export failed, so
-			// the CHANGELOG entry it was supposed to annotate never
-			// got generated. Clearing the section avoids leakage into
-			// the next same-day export.
-			if rbErr := core.WriteChangelogNote(cfg.Paths().Repo, today, ""); rbErr != nil {
-				log.Printf("rollback changelog note after failed export: %v", rbErr)
-			}
-		}
 		writeErr(w, 500, err)
 		return
 	}
@@ -829,6 +806,47 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 		"removed":       diff.Removed,
 		"moved":         diff.Moved,
 		"git_committed": gitCommitted,
+	})
+}
+
+// handleGetLastExportNote returns the note paragraph of the top
+// section in CHANGELOG.md — used by the UI to pre-fill the Edit-note
+// textarea.
+func (s *Server) handleGetLastExportNote(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	note, err := core.CurrentExportNote(cfg.Paths().Repo)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"note": note})
+}
+
+// handleUpdateLastExportNote rewrites the note paragraph of the top
+// section in CHANGELOG.md and creates a follow-up git commit. The
+// user pushes manually when ready.
+func (s *Server) handleUpdateLastExportNote(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	var req struct {
+		Note string `json:"note"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := core.UpdateLatestExportNote(cfg.Paths().Repo, req.Note); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	committed := false
+	if err := core.GitCommitNoteUpdate(r.Context(), cfg.Paths().Repo); err != nil {
+		log.Printf("git commit after note edit: %v (non-fatal)", err)
+	} else {
+		committed = true
+	}
+	writeJSON(w, 200, map[string]any{
+		"note":          strings.TrimSpace(req.Note),
+		"git_committed": committed,
 	})
 }
 

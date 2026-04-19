@@ -16,10 +16,17 @@ function quiSyncApp() {
     config: null,
     diff: null,
     // exportNote is the free-form markdown the maintainer can attach
-    // to the next Commit export. Sent with the request and merged into
-    // today's CHANGELOG.md section via CHANGELOG_NOTES.md. Cleared
-    // automatically on successful export.
+    // to the next Commit export. UI state only — sent with the export
+    // request and written directly into today's CHANGELOG.md section.
+    // Cleared automatically on successful export.
     exportNote: '',
+    // After a successful export, stash the submitted note so the user
+    // can open "Edit note" to fix a typo without re-running export.
+    // Resets to '' when the next export runs.
+    lastExportNote: '',
+    editingExportNote: false,
+    editExportNoteDraft: '',
+    savingExportNote: false,
     changelog: null,
     toasts: [],
     nextToastId: 1,
@@ -1148,19 +1155,21 @@ function quiSyncApp() {
       if (!ok) return;
       this.loading.export = true;
       try {
-        // Any note the user typed goes into the export request body;
-        // the backend writes it to CHANGELOG_NOTES.md before the export
-        // runs so AppendChangelog merges it into today's entry.
+        // Any note the user typed goes into the export request body
+        // and is written directly into today's CHANGELOG.md section.
         const note = (this.exportNote || '').trim();
         this.diff = await this.apiFetch('/api/export/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ note }),
         });
-        // Clear the note draft on successful export so the next run
-        // starts fresh — the note is already preserved in CHANGELOG.md.
+        // Clear the note draft and stash the submitted text so
+        // "Edit note" can pre-fill with it if the user needs to fix
+        // a typo.
         if (this.diff && !this.diff.empty) {
+          this.lastExportNote = note;
           this.exportNote = '';
+          this.editingExportNote = false;
         }
         await this.loadChangelog();
         await this.loadRepoStatus();
@@ -1180,6 +1189,50 @@ function quiSyncApp() {
         this.toast('error', 'Export failed: ' + e.message);
       } finally {
         this.loading.export = false;
+      }
+    },
+
+    // Open the inline editor for the note attached to the most recent
+    // CHANGELOG.md section. Pre-fills with whatever text is in the
+    // file right now (authoritative, survives page refresh).
+    async openEditExportNote() {
+      this.editingExportNote = true;
+      this.editExportNoteDraft = this.lastExportNote || '';
+      try {
+        const r = await this.apiFetch('/api/export/last-note');
+        if (r && typeof r.note === 'string') {
+          this.editExportNoteDraft = r.note;
+        }
+      } catch (e) {
+        // Fall back to the cached value — editing still works.
+      }
+    },
+
+    cancelEditExportNote() {
+      this.editingExportNote = false;
+      this.editExportNoteDraft = '';
+    },
+
+    // Save the edited note. Rewrites the top CHANGELOG.md section and
+    // creates a follow-up git commit. User pushes when ready.
+    async saveEditExportNote() {
+      this.savingExportNote = true;
+      try {
+        const r = await this.apiFetch('/api/export/last-note', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: this.editExportNoteDraft || '' }),
+        });
+        this.lastExportNote = (r && r.note) || '';
+        this.editingExportNote = false;
+        await this.loadChangelog();
+        await this.loadRepoStatus();
+        const gitMsg = r && r.git_committed ? ' — new git commit created, push when ready' : '';
+        this.toast('info', 'Note updated' + gitMsg + '.');
+      } catch (e) {
+        this.toast('error', 'Note update failed: ' + e.message);
+      } finally {
+        this.savingExportNote = false;
       }
     },
   };

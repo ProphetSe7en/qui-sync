@@ -52,7 +52,7 @@ func (d *ExportDiff) Empty() bool {
 // crash leaves the already-processed instances in a consistent state. The
 // changelog is appended only at the very end, so a partial run does not
 // produce a half-written changelog entry.
-func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool) (*ExportDiff, error) {
+func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool, note string) (*ExportDiff, error) {
 	paths := cfg.Paths()
 
 	// Serialize concurrent exports on the same repo. Different repos run parallel.
@@ -287,7 +287,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 	}
 
 	if !dryRun && !diff.Empty() {
-		if err := AppendChangelog(paths.Repo, diff, time.Now()); err != nil {
+		if err := AppendChangelog(paths.Repo, diff, time.Now(), note); err != nil {
 			return nil, err
 		}
 	}

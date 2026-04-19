@@ -169,6 +169,25 @@ func runGitSilent(ctx context.Context, dir string, env []string, args ...string)
 	return err
 }
 
+// GitCommitNoteUpdate stages CHANGELOG.md and creates a follow-up
+// commit for an edited export note. "nothing to commit" is treated as
+// success — the UI may trigger this with no actual text change.
+func GitCommitNoteUpdate(ctx context.Context, repoDir string) error {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return fmt.Errorf("not a git repo: %s", repoDir)
+	}
+	_ = runGitSilent(ctx, repoDir, nil, "config", "user.name", "qui-sync")
+	_ = runGitSilent(ctx, repoDir, nil, "config", "user.email", "qui-sync@local")
+	if _, err := runGit(ctx, repoDir, nil, "add", "CHANGELOG.md"); err != nil {
+		return err
+	}
+	_, err := runGit(ctx, repoDir, nil, "commit", "-m", "qui-sync: update export note")
+	if err != nil && strings.Contains(err.Error(), "nothing to commit") {
+		return nil
+	}
+	return err
+}
+
 // SetupGitRepo initializes a git repo at repoDir (if not already) and
 // sets the origin remote URL. Idempotent — safe to call multiple times.
 func SetupGitRepo(ctx context.Context, repoDir, remoteURL string) error {
