@@ -267,8 +267,9 @@ func slugFromPath(relPath string) string {
 
 // isRulePath returns true when p points at a potential rule file under
 // the share-repo convention — "<category>/<filename>.json" with exactly
-// two path segments and a non-empty filename. Files under archive/ are
-// excluded (retired rules, not part of the active diff).
+// two path segments and a non-empty filename. Paths under archive/ are
+// naturally excluded by the two-segment rule (archived rules live at
+// archive/<category>/<filename>.json, three segments).
 func isRulePath(p string) bool {
 	if filepath.Ext(p) != ".json" {
 		return false
@@ -278,9 +279,6 @@ func isRulePath(p string) bool {
 		return false
 	}
 	if strings.HasPrefix(parts[0], ".") {
-		return false
-	}
-	if parts[0] == "archive" {
 		return false
 	}
 	return true

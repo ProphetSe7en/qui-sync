@@ -150,12 +150,18 @@ func WriteChangelogNote(repoDir, date, note string) error {
 	preamble, sections := splitNotes(string(existing))
 	heading := "## " + date
 
-	// Remove any existing section for this date.
+	// Remove any existing section for this date. Match by prefix so
+	// hand-edited headings like "## 2026-04-19 (release)" still count
+	// as the same day's section rather than duplicating.
+	headingPrefix := heading
 	filtered := sections[:0]
 	for _, s := range sections {
-		if strings.TrimSpace(strings.SplitN(s, "\n", 2)[0]) != heading {
-			filtered = append(filtered, s)
+		first := strings.SplitN(s, "\n", 2)[0]
+		trimmed := strings.TrimSpace(first)
+		if trimmed == headingPrefix || strings.HasPrefix(trimmed, headingPrefix+" ") {
+			continue
 		}
+		filtered = append(filtered, s)
 	}
 	sections = filtered
 

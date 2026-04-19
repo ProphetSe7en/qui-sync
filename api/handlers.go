@@ -781,15 +781,31 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	// export, so AppendChangelog (called at the end of RunExport) can
 	// read it back and merge it into today's CHANGELOG section. Only
 	// write on real runs — a preview should not mutate disk.
-	if !dryRun {
-		today := time.Now().Format("2006-01-02")
+	//
+	// If RunExport fails after we've written the note we roll it back
+	// so the file is not stranded on disk without a matching commit.
+	// A stranded note would leak into the next same-day export.
+	today := time.Now().Format("2006-01-02")
+	noteWritten := false
+	if !dryRun && strings.TrimSpace(req.Note) != "" {
 		if err := core.WriteChangelogNote(cfg.Paths().Repo, today, req.Note); err != nil {
 			log.Printf("write changelog note: %v (non-fatal)", err)
+		} else {
+			noteWritten = true
 		}
 	}
 
 	diff, err := core.RunExport(r.Context(), cfg, client, dryRun)
 	if err != nil {
+		if noteWritten {
+			// Roll back — the note was written but export failed, so
+			// the CHANGELOG entry it was supposed to annotate never
+			// got generated. Clearing the section avoids leakage into
+			// the next same-day export.
+			if rbErr := core.WriteChangelogNote(cfg.Paths().Repo, today, ""); rbErr != nil {
+				log.Printf("rollback changelog note after failed export: %v", rbErr)
+			}
+		}
 		writeErr(w, 500, err)
 		return
 	}

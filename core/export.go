@@ -251,13 +251,25 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 					}
 					// Archive to /data/repo/archive/<category>/<name>.json —
 					// kept under version control so the rule's history
-					// stays visible on GitHub. Plain filename (not
-					// timestamped) — if the same rule is later archived
-					// again, the newer version overwrites and git's own
-					// history preserves the earlier one.
+					// stays visible on GitHub.
+					//
+					// If a rule with the same name has already been
+					// archived before (rare — user-confirmed "probably
+					// not, archived rules don't come back"), rename
+					// the existing archive with a timestamp suffix so
+					// the previous version is not silently destroyed.
+					// git history on the remote still holds earlier
+					// committed versions, but this protects the case
+					// where the first archive was never pushed.
 					archivePath := filepath.Join(paths.Repo, "archive", entry.Category, RuleFilename(entry.LastName)+".json")
 					if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
 						return nil, fmt.Errorf("mkdir archive dir: %w", err)
+					}
+					if _, err := os.Stat(archivePath); err == nil {
+						stamped := archivePath[:len(archivePath)-len(".json")] + "_" + time.Now().Format("2006-01-02") + ".json"
+						if err := os.Rename(archivePath, stamped); err != nil {
+							return nil, fmt.Errorf("preserve prior archive %s: %w", archivePath, err)
+						}
 					}
 					if err := os.Rename(path, archivePath); err != nil {
 						return nil, fmt.Errorf("archive %s: %w", path, err)

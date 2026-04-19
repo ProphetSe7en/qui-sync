@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -34,13 +35,23 @@ func NewBackupScheduler(
 // Start begins the background loop. Blocks until Stop() is called or
 // ctx is cancelled.
 func (b *BackupScheduler) Start(ctx context.Context) {
-	log.Println("[backup] scheduler started")
+	initial := strings.TrimSpace(b.cfg().Backup.Interval)
+	if initial == "" || initial == "off" {
+		log.Println("[backup] scheduler started (interval=off, waiting for config)")
+	} else {
+		log.Printf("[backup] scheduler started (interval=%s)", initial)
+	}
+
 	// 60s poll is cheaper than recomputing a dynamic timer whenever
 	// the interval config changes. The actual backup cost is only
 	// paid when interval has elapsed.
 	ticker := time.NewTicker(60 * time.Second)
 	defer ticker.Stop()
 
+	// lastInterval tracks the string value so we can log whenever the
+	// user flips the schedule in Settings — useful when diagnosing
+	// "I set it to 24h, did anything happen?" reports.
+	lastInterval := initial
 	var lastRun time.Time
 
 	for {
@@ -53,6 +64,11 @@ func (b *BackupScheduler) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			cfg := b.cfg()
+			current := strings.TrimSpace(cfg.Backup.Interval)
+			if current != lastInterval {
+				log.Printf("[backup] interval changed: %q → %q", lastInterval, current)
+				lastInterval = current
+			}
 			interval := ParseBackupInterval(cfg.Backup.Interval)
 			if interval == 0 {
 				continue // scheduler disabled

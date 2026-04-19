@@ -102,6 +102,32 @@ func TestReadManualNotesRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWriteChangelogNoteReplacesHeadingWithExtraText confirms that a
+// hand-edited heading with extra suffix text (e.g. "## 2026-04-19
+// (release)") still matches as the same day's section — writing a new
+// note for that date replaces it rather than duplicating.
+func TestWriteChangelogNoteReplacesHeadingWithExtraText(t *testing.T) {
+	dir := t.TempDir()
+	initial := "## 2026-04-19 (release)\n\nhand-edited content\n"
+	if err := os.WriteFile(filepath.Join(dir, "CHANGELOG_NOTES.md"), []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteChangelogNote(dir, "2026-04-19", "replacement"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "CHANGELOG_NOTES.md"))
+	// Old section (with suffix) should be gone.
+	if strings.Contains(string(got), "(release)") {
+		t.Errorf("hand-edited heading survived — should have been replaced:\n%s", got)
+	}
+	if strings.Contains(string(got), "hand-edited content") {
+		t.Errorf("old content survived:\n%s", got)
+	}
+	if !strings.Contains(string(got), "replacement") {
+		t.Errorf("new content missing:\n%s", got)
+	}
+}
+
 // TestWriteChangelogNoteEmptyOnEmptyFileLeavesNothing ensures the "clear
 // the only section" path removes the file entirely rather than leaving
 // an empty husk.

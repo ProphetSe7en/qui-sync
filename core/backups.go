@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -26,6 +27,13 @@ func InstanceBackupDir(cfg *Config, instanceID int) string {
 // 1:1 copy — no stripping, no placeholders. Returns the absolute path
 // of the created directory and the number of rules written.
 //
+// Writes go to a sibling "<ts>.tmp" directory first and get atomically
+// renamed to the final "<ts>" path only on success. A context-cancel,
+// write error, or container kill mid-backup leaves a .tmp directory
+// that the retention pruner skips (unparseable timestamp) and a future
+// cleanup pass can sweep — the finished list never contains partial
+// snapshots.
+//
 // Used by both the manual "Backup now" button and the background
 // scheduler so the on-disk shape is identical regardless of trigger.
 func CreateBackup(ctx context.Context, cfg *Config, client *QuiClient, instanceID int) (dir string, ruleCount int, err error) {
@@ -37,22 +45,36 @@ func CreateBackup(ctx context.Context, cfg *Config, client *QuiClient, instanceI
 		return "", 0, fmt.Errorf("list automations (instance %d): %w", instanceID, err)
 	}
 	ts := time.Now().Format(BackupTimestampLayout)
-	dir = filepath.Join(InstanceBackupDir(cfg, instanceID), ts)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", 0, fmt.Errorf("mkdir backup: %w", err)
+	finalDir := filepath.Join(InstanceBackupDir(cfg, instanceID), ts)
+	tmpDir := finalDir + ".tmp"
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return "", 0, fmt.Errorf("mkdir backup tmp: %w", err)
 	}
-	for _, rule := range rules {
-		data, err := json.MarshalIndent(json.RawMessage(rule.Raw), "", "  ")
+	// Ensure we never leave a partial .tmp around on any failure path.
+	defer func() {
 		if err != nil {
+			_ = os.RemoveAll(tmpDir)
+		}
+	}()
+
+	for _, rule := range rules {
+		if ctx.Err() != nil {
+			return "", 0, ctx.Err()
+		}
+		data, mErr := json.MarshalIndent(json.RawMessage(rule.Raw), "", "  ")
+		if mErr != nil {
 			data = rule.Raw
 		}
 		slug := Slugify(rule.Name)
 		fname := fmt.Sprintf("%s_%d.json", slug, rule.ID)
-		if err := os.WriteFile(filepath.Join(dir, fname), data, 0o644); err != nil {
-			return dir, 0, fmt.Errorf("write %s: %w", fname, err)
+		if wErr := os.WriteFile(filepath.Join(tmpDir, fname), data, 0o644); wErr != nil {
+			return "", 0, fmt.Errorf("write %s: %w", fname, wErr)
 		}
 	}
-	return dir, len(rules), nil
+	if err := os.Rename(tmpDir, finalDir); err != nil {
+		return "", 0, fmt.Errorf("finalize backup: %w", err)
+	}
+	return finalDir, len(rules), nil
 }
 
 // ListInstanceBackups returns the timestamp strings of every backup
@@ -69,9 +91,16 @@ func ListInstanceBackups(cfg *Config, instanceID int) ([]string, error) {
 	}
 	var out []string
 	for _, e := range entries {
-		if e.IsDir() {
-			out = append(out, e.Name())
+		if !e.IsDir() {
+			continue
 		}
+		// Skip in-progress backups — CreateBackup writes to <ts>.tmp
+		// and renames to <ts> only on success. A lingering .tmp is
+		// a crashed or interrupted backup.
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			continue
+		}
+		out = append(out, e.Name())
 	}
 	sort.Sort(sort.Reverse(sort.StringSlice(out)))
 	return out, nil
@@ -149,11 +178,14 @@ func PruneAllBackups(cfg *Config, retentionDays, keepLastN int, now time.Time) (
 			continue
 		}
 		deleted, err := PruneInstanceBackups(cfg, id, retentionDays, keepLastN, now)
-		if err != nil {
-			return out, err
-		}
+		// Always record whatever was successfully deleted, even on
+		// mid-loop failure — losing partial results would make the
+		// caller's "pruned N snapshots" log misleading.
 		if len(deleted) > 0 {
 			out[id] = deleted
+		}
+		if err != nil {
+			return out, err
 		}
 	}
 	return out, nil

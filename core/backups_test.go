@@ -3,6 +3,7 @@ package core
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -152,6 +153,34 @@ func TestPruneUnparseableTimestampLeft(t *testing.T) {
 	}
 	if _, err := os.Stat(junkDir); err != nil {
 		t.Errorf("unparseable directory was deleted: %v", err)
+	}
+}
+
+// TestListInstanceBackupsSkipsTmpDirs ensures in-progress .tmp
+// directories created by CreateBackup (and not yet renamed to their
+// final timestamp path) never appear as selectable snapshots — they
+// are crashed-mid-write backups and a listing that included them
+// would mislead retention and restore.
+func TestListInstanceBackupsSkipsTmpDirs(t *testing.T) {
+	cfg := newBackupTestCfg(t)
+	_ = backupFixture(t, cfg, 1, time.Now(), 1, 2)
+	// Simulate a crashed backup: a .tmp directory next to the real snapshots.
+	tmpDir := filepath.Join(InstanceBackupDir(cfg, 1),
+		time.Now().Format(BackupTimestampLayout)+".tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := ListInstanceBackups(cfg, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ts := range listed {
+		if strings.HasSuffix(ts, ".tmp") {
+			t.Errorf(".tmp directory must not appear in backup list: %v", listed)
+		}
+	}
+	if len(listed) != 2 {
+		t.Errorf("expected 2 real snapshots, got %d: %v", len(listed), listed)
 	}
 }
 
