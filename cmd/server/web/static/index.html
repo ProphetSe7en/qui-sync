@@ -318,6 +318,13 @@
                       title="Apply local file changes (from PRs, edits) back into Qui. Uses the same merge that preserves your trackers.">
                 Apply to Qui
               </button>
+              <button class="btn" @click="resetLocalToRemote()"
+                      :disabled="!repoStatus.status.remote_url || resettingRepo"
+                      style="border-color:var(--accent-red); color:var(--accent-red)"
+                      title="Discard local commits and replace /data/repo with an exact copy of the remote branch. Use for first-time setup when local and remote diverged (push/pull refused with 'unrelated histories' / 'non-fast-forward').">
+                <span x-show="!resettingRepo">Reset local to remote</span>
+                <span x-show="resettingRepo">Resetting…</span>
+              </button>
               <span class="dim" style="font-size:var(--font-xs)"
                     x-show="!repoStatus.push_configured">
                 Add push token in Settings to enable

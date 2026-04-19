@@ -70,6 +70,9 @@ function quiSyncApp() {
     pushTokenValidating: false,
     pushTokenValidated: '',       // login name on success, '' otherwise
     pushTokenValidateError: '',
+
+    // Busy flag for the destructive "Reset local to remote" action.
+    resettingRepo: false,
     loadingRepoStatus: false,
     pushingRepo: false,
     pullingRepo: false,
@@ -1010,6 +1013,29 @@ function quiSyncApp() {
         this.toast('error', 'Push failed: ' + e.message);
       } finally {
         this.pushingRepo = false;
+      }
+    },
+
+    // resetLocalToRemote is the escape hatch when local and remote have
+    // "unrelated histories" — typically the first-time-setup case where
+    // qui-sync's fresh git init can't reconcile with an existing remote
+    // repo. Destructive: discards local commits that aren't on the remote.
+    async resetLocalToRemote() {
+      const ok = await this.confirm({
+        title: 'Reset local to remote?',
+        body: 'This discards every local commit that is not already on the remote and replaces your /data/repo with an exact copy of the remote branch. Use this on first-time setup when local and remote have diverged histories, or any time you want to start fresh from the remote state. Your Qui itself is not touched.',
+        confirmLabel: 'Reset local',
+      });
+      if (!ok) return;
+      this.resettingRepo = true;
+      try {
+        await this.apiFetch('/api/repo/reset-to-remote', { method: 'POST' });
+        await this.loadRepoStatus();
+        this.toast('info', 'Local repo reset to remote state. Run Export again to write your Qui rules on top.');
+      } catch (e) {
+        this.toast('error', 'Reset failed: ' + e.message);
+      } finally {
+        this.resettingRepo = false;
       }
     },
 

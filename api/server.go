@@ -152,6 +152,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/config/push-token", s.handleSavePushToken)
 	mux.HandleFunc("POST /api/config/push-token/validate", s.handleValidatePushToken)
 	mux.HandleFunc("GET /api/repo/rule-diff", s.handleRepoRuleDiff)
+	mux.HandleFunc("POST /api/repo/reset-to-remote", s.handleResetLocalToRemote)
 	mux.HandleFunc("PUT /api/config/git-remote", s.handleSetGitRemote)
 	mux.HandleFunc("GET /api/config/git-remote", s.handleGetGitRemote)
 	mux.HandleFunc("PUT /api/config/qui", s.handleUpdateQuiConfig)

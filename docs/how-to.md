@@ -140,6 +140,18 @@ If someone submitted a PR to your repo and you merged it:
 3. The files in `/data/repo/` are now updated.
 4. To apply these changes to your Qui: click **Apply to Qui** → switch to Sync tab → Plan → Apply.
 
+### First-time setup against an existing remote
+
+If you are pointing qui-sync at a repo that already has rule files on GitHub (your fork, or a repo you migrated from elsewhere), the first Push can fail with `non-fast-forward` or `unrelated histories`. That is because qui-sync's fresh `git init` starts a separate history from what is already on the remote.
+
+Click **Reset local to remote** on the Share-repo panel. This fetches the remote branch and replaces `/data/repo` with an exact copy, discarding the empty local init. After the reset:
+
+1. Re-run Export — your Qui rules are written on top of the remote content.
+2. Review changes — you now see only real differences between your Qui and the remote.
+3. Push — sends just your changes, no history conflict.
+
+The button is destructive (it throws away any local commits that are not on the remote), but on a first-time setup there are no meaningful local commits to lose.
+
 ### Excluding an entire instance
 
 Click **Exclude instance** on the instance row. All rules from that instance are skipped during export, including any new rules added to Qui later. Click **Include instance** to reverse.

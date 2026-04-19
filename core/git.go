@@ -327,6 +327,55 @@ func PullRepo(ctx context.Context, repoDir, token string) error {
 	return nil
 }
 
+// ResetLocalToRemote fetches origin/<current-branch> and hard-resets the
+// local working tree and branch pointer to match it. Used when the local
+// repo's history is divergent from the remote (typically a first-time
+// setup where qui-sync ran `git init` against an existing remote — the
+// two histories are "unrelated" and git push / pull refuse to reconcile).
+//
+// This operation is DESTRUCTIVE: any local commits that are not already
+// on the remote are thrown away. Callers must confirm with the user
+// before invoking.
+//
+// Token is optional — an empty token fetches anonymously, which works
+// for public repos. If the repo is private the token is required.
+func ResetLocalToRemote(ctx context.Context, repoDir, token string) error {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		return fmt.Errorf("not a git repo: %s", repoDir)
+	}
+	originURL, err := runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
+	if err != nil {
+		return fmt.Errorf("read origin url: %w", err)
+	}
+	originURL = strings.TrimSpace(originURL)
+	if originURL == "" {
+		return fmt.Errorf("no origin remote configured")
+	}
+
+	auth := GitAuth{Mode: GitAuthPublic}
+	if token != "" {
+		auth = GitAuth{Mode: GitAuthToken, Token: token}
+	}
+	effectiveURL, env, err := prepareAuth(originURL, auth)
+	if err != nil {
+		return err
+	}
+
+	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")
+	if err != nil {
+		return fmt.Errorf("determine branch: %w", err)
+	}
+	branch = strings.TrimSpace(branch)
+
+	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, branch); err != nil {
+		return fmt.Errorf("fetch: %w", err)
+	}
+	if _, err := runGit(ctx, repoDir, nil, "reset", "--hard", "FETCH_HEAD"); err != nil {
+		return fmt.Errorf("reset: %w", err)
+	}
+	return nil
+}
+
 // RepoDiffSummary returns a human-readable summary of what would be pushed.
 func RepoDiffSummary(ctx context.Context, repoDir string) (string, error) {
 	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")

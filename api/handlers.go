@@ -793,6 +793,29 @@ func (s *Server) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleResetLocalToRemote hard-resets /data/repo to match the current
+// remote branch. Destructive — local commits not on remote are lost.
+// Used for first-time setup where qui-sync's fresh git init produced a
+// history that diverges from an existing remote; git push + pull refuse
+// to reconcile "unrelated histories" and the user needs a clean way out.
+func (s *Server) handleResetLocalToRemote(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+
+	// Token is optional — public repos fetch anonymously. If a token
+	// is stored we pass it through so private repos work too.
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	token := ""
+	if tokenBytes, err := os.ReadFile(tokenPath); err == nil {
+		token = strings.TrimSpace(string(tokenBytes))
+	}
+
+	if err := core.ResetLocalToRemote(r.Context(), cfg.Paths().Repo, token); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "reset"})
+}
+
 // ---- repo rule-level diff ----
 
 // handleRepoRuleDiff returns a structured rule-by-rule comparison of the
