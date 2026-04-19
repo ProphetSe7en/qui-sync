@@ -208,6 +208,20 @@
                 title="Write changes to disk and auto-commit to git. Your share-repo is updated and ready for Pull/Sync.">Commit export</button>
       </div>
       <div class="panel-body">
+        <!-- Free-form note that goes into today's CHANGELOG.md entry.
+             Optional — leave blank for a standard auto-generated entry.
+             Cleared automatically on successful export. -->
+        <div style="margin-bottom:12px">
+          <label for="export-note" style="display:block; font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; color:var(--text-secondary); margin-bottom:4px">
+            Note for this export (optional)
+          </label>
+          <textarea id="export-note" class="input"
+                    x-model="exportNote"
+                    rows="2"
+                    placeholder="Short explanation of why these rules changed — e.g. 'Added HDBits to Tier 1 after they joined the consensus.' Written into CHANGELOG.md alongside the auto-generated rule list."
+                    style="width:100%; font-family:var(--font-body); font-size:var(--font-sm); resize:vertical"></textarea>
+        </div>
+
         <template x-if="!diff && !loading.export">
           <div class="empty">Click <b>Preview</b> to see what would change.</div>
         </template>

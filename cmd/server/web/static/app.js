@@ -15,6 +15,11 @@ function quiSyncApp() {
     categoryDraft: '',     // new name while editing
     config: null,
     diff: null,
+    // exportNote is the free-form markdown the maintainer can attach
+    // to the next Commit export. Sent with the request and merged into
+    // today's CHANGELOG.md section via CHANGELOG_NOTES.md. Cleared
+    // automatically on successful export.
+    exportNote: '',
     changelog: null,
     toasts: [],
     nextToastId: 1,
@@ -1140,7 +1145,20 @@ function quiSyncApp() {
       if (!ok) return;
       this.loading.export = true;
       try {
-        this.diff = await this.apiFetch('/api/export/run', { method: 'POST' });
+        // Any note the user typed goes into the export request body;
+        // the backend writes it to CHANGELOG_NOTES.md before the export
+        // runs so AppendChangelog merges it into today's entry.
+        const note = (this.exportNote || '').trim();
+        this.diff = await this.apiFetch('/api/export/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note }),
+        });
+        // Clear the note draft on successful export so the next run
+        // starts fresh — the note is already preserved in CHANGELOG.md.
+        if (this.diff && !this.diff.empty) {
+          this.exportNote = '';
+        }
         await this.loadChangelog();
         await this.loadRepoStatus();
         if (this.diff.empty) {

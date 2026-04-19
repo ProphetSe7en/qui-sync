@@ -733,13 +733,43 @@ func (s *Server) handleListRules(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleExportPreview(w http.ResponseWriter, r *http.Request) { s.doExport(w, r, true) }
 func (s *Server) handleExportRun(w http.ResponseWriter, r *http.Request)     { s.doExport(w, r, false) }
 
+// exportRequest is the optional body for the export endpoints. Clients
+// may omit it entirely — empty body is treated as "run with defaults".
+type exportRequest struct {
+	// Note is a free-form markdown paragraph the maintainer can attach
+	// to today's CHANGELOG entry, explaining why the rules changed.
+	// Written to CHANGELOG_NOTES.md before RunExport so AppendChangelog
+	// picks it up during the same export run.
+	Note string `json:"note,omitempty"`
+}
+
 func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	cfg := s.getConfig()
+
+	// Body is optional; tolerate empty / absent / invalid JSON so older
+	// clients that send nothing still work.
+	var req exportRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req)
+	}
+
 	client, err := s.newClient()
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
+
+	// Persist the export note to CHANGELOG_NOTES.md BEFORE running
+	// export, so AppendChangelog (called at the end of RunExport) can
+	// read it back and merge it into today's CHANGELOG section. Only
+	// write on real runs — a preview should not mutate disk.
+	if !dryRun {
+		today := time.Now().Format("2006-01-02")
+		if err := core.WriteChangelogNote(cfg.Paths().Repo, today, req.Note); err != nil {
+			log.Printf("write changelog note: %v (non-fatal)", err)
+		}
+	}
+
 	diff, err := core.RunExport(r.Context(), cfg, client, dryRun)
 	if err != nil {
 		writeErr(w, 500, err)

@@ -125,3 +125,93 @@ func readManualNotes(repoDir, date string) string {
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
 }
+
+// WriteChangelogNote upserts a dated section in CHANGELOG_NOTES.md.
+//
+// If note is empty, the section for that date is removed. Otherwise the
+// section is replaced (if it already exists) or prepended as a new
+// top-of-file section, matching the ordering convention CHANGELOG.md
+// uses (newest date first).
+//
+// The file is user-visible and can be hand-edited alongside the
+// generated CHANGELOG.md. readManualNotes picks up the content during
+// the next export's AppendChangelog run.
+func WriteChangelogNote(repoDir, date, note string) error {
+	path := filepath.Join(repoDir, "CHANGELOG_NOTES.md")
+	note = strings.TrimSpace(note)
+
+	existing, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	// Split the existing file into sections keyed by heading line.
+	// Anything before the first "## " is preamble (usually blank).
+	preamble, sections := splitNotes(string(existing))
+	heading := "## " + date
+
+	// Remove any existing section for this date.
+	filtered := sections[:0]
+	for _, s := range sections {
+		if strings.TrimSpace(strings.SplitN(s, "\n", 2)[0]) != heading {
+			filtered = append(filtered, s)
+		}
+	}
+	sections = filtered
+
+	// Prepend the new section (if non-empty) so the most recent date is
+	// at the top — matches the ordering CHANGELOG.md follows.
+	if note != "" {
+		newSection := heading + "\n\n" + note + "\n"
+		sections = append([]string{newSection}, sections...)
+	}
+
+	if len(sections) == 0 && strings.TrimSpace(preamble) == "" {
+		// Nothing left to write — remove the file if it exists, silent
+		// no-op if it doesn't.
+		_ = os.Remove(path)
+		return nil
+	}
+
+	var out strings.Builder
+	if preamble != "" {
+		out.WriteString(preamble)
+	}
+	for i, s := range sections {
+		if i > 0 && !strings.HasSuffix(out.String(), "\n\n") {
+			out.WriteString("\n")
+		}
+		out.WriteString(s)
+	}
+	return os.WriteFile(path, []byte(out.String()), 0o644)
+}
+
+// splitNotes divides CHANGELOG_NOTES.md into (preamble, sections) where
+// preamble is everything before the first "## " heading, and sections
+// is a slice of section strings each beginning with their heading line.
+func splitNotes(s string) (preamble string, sections []string) {
+	lines := strings.SplitAfter(s, "\n")
+	var cur strings.Builder
+	inSection := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "## ") {
+			if inSection {
+				sections = append(sections, cur.String())
+				cur.Reset()
+			} else {
+				preamble = cur.String()
+				cur.Reset()
+				inSection = true
+			}
+		}
+		cur.WriteString(l)
+	}
+	if cur.Len() > 0 {
+		if inSection {
+			sections = append(sections, cur.String())
+		} else {
+			preamble = cur.String()
+		}
+	}
+	return preamble, sections
+}
