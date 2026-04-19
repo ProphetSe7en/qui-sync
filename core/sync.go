@@ -178,57 +178,50 @@ type repoRule struct {
 }
 
 // listRepoRules walks a subscription clone and parses every rule file.
-// Respects the repo's layout so it works equally on qui-sync-native
-// repos (rules/<cat>/<slug>.json) and TRaSH-style repos
-// (<cat>/<name>.json at the root). If neither layout is detected the
-// repo is treated as empty.
+// Rule files live at "<category>/<filename>.json" and are identified by
+// their top-level "name" field; anything else in the repo (LICENSE,
+// README, scripts/, docs/) is skipped automatically.
 func listRepoRules(cloneDir string) ([]repoRule, error) {
-	layout := DetectLayout(cloneDir)
-	if layout == LayoutUnknown {
-		return nil, nil
+	entries, err := os.ReadDir(cloneDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	var out []repoRule
-	for _, root := range layout.WalkRoots() {
-		rulesDir := filepath.Join(cloneDir, root)
-		if _, err := os.Stat(rulesDir); os.IsNotExist(err) {
+	for _, entry := range entries {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		err := filepath.Walk(rulesDir, func(path string, info os.FileInfo, err error) error {
-			if err != nil {
-				return err
+		cat := entry.Name()
+		catDir := filepath.Join(cloneDir, cat)
+		files, err := os.ReadDir(catDir)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+				continue
 			}
-			if info.IsDir() || !strings.HasSuffix(info.Name(), ".json") {
-				return nil
-			}
-			data, err := os.ReadFile(path)
+			full := filepath.Join(catDir, f.Name())
+			data, err := os.ReadFile(full)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			var parsed struct {
-				Slug      string `json:"_slug"`
 				Name      string `json:"name"`
 				SortOrder int    `json:"sortOrder"`
 			}
-			if err := json.Unmarshal(data, &parsed); err != nil {
-				// Skip unparseable files — they'd need maintainer
-				// attention on the export side, not our problem here.
-				return nil
+			if err := json.Unmarshal(data, &parsed); err != nil || parsed.Name == "" {
+				// Not a rule file (malformed JSON, or lacking the
+				// required "name" field). Safely ignored.
+				continue
 			}
-			rel, _ := filepath.Rel(cloneDir, path)
-			rel = filepath.ToSlash(rel)
-			cat := layout.CategoryFromPath(rel)
-
-			// Slug identity: qui-sync files carry it explicitly in
-			// "_slug"; TRaSH files don't, so we re-slugify the rule
-			// name to keep downstream state lookups consistent.
-			slug := parsed.Slug
-			if slug == "" {
-				if layout == LayoutTRaSH && parsed.Name != "" {
-					slug = Slugify(parsed.Name)
-				} else {
-					slug = strings.TrimSuffix(filepath.Base(path), ".json")
-				}
-			}
+			// Slug identity is derived from the rule name so state
+			// keys stay stable regardless of filesystem quirks in
+			// the filename.
+			slug := Slugify(parsed.Name)
 			out = append(out, repoRule{
 				RepoPath:  cat + "/" + slug,
 				Category:  cat,
@@ -237,10 +230,6 @@ func listRepoRules(cloneDir string) ([]repoRule, error) {
 				SortOrder: parsed.SortOrder,
 				Raw:       data,
 			})
-			return nil
-		})
-		if err != nil {
-			return out, err
 		}
 	}
 	return out, nil

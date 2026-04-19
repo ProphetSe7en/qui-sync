@@ -69,12 +69,6 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 		return nil, err
 	}
 
-	// Detect layout once per export — all path decisions below respect
-	// the format the repo already uses. For empty repos the layout is
-	// Unknown, which RulePath() resolves to the qui-sync native format;
-	// after the first commit the repo detects as qui-sync going forward.
-	layout := DetectLayout(paths.Repo)
-
 	diff := &ExportDiff{}
 	// Track which (instance, ruleID) we saw this run so we can detect removals.
 	seen := map[int]map[int]bool{}
@@ -142,10 +136,10 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 				return nil, fmt.Errorf("build rule file (id=%d): %w", r.ID, err)
 			}
 
-			path := filepath.Join(paths.Repo, layout.RulePath(inst.Category, slug, r.Name))
+			path := filepath.Join(paths.Repo, inst.Category, RuleFilename(r.Name)+".json")
 			oldPath := ""
 			if oldCategory != "" && oldCategory != inst.Category {
-				oldPath = filepath.Join(paths.Repo, layout.RulePath(oldCategory, slug, r.Name))
+				oldPath = filepath.Join(paths.Repo, oldCategory, RuleFilename(r.Name)+".json")
 			}
 
 			existing, existsErr := os.ReadFile(path)
@@ -248,7 +242,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 				Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
 			})
 			if !dryRun {
-				path := filepath.Join(paths.Repo, layout.RulePath(entry.Category, entry.Slug, entry.LastName))
+				path := filepath.Join(paths.Repo, entry.Category, RuleFilename(entry.LastName)+".json")
 				if _, err := os.Stat(path); err == nil {
 					if err := backupFile(path, paths.Backups); err != nil {
 						return nil, err

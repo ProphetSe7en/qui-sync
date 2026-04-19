@@ -53,3 +53,23 @@ func UniqueSlug(name string, taken map[string]bool) string {
 		}
 	}
 }
+
+var (
+	unsafeFilenameChars = regexp.MustCompile(`[:/\\?*<>|"]`)
+	multipleSpaces      = regexp.MustCompile(`\s+`)
+)
+
+// RuleFilename converts a rule name into the on-disk filename (without
+// extension) used across the share-repo ecosystem: filesystem-unsafe
+// characters removed, whitespace collapsed, case preserved. Matches the
+// convention observed across multiple community-maintained repos.
+//
+//	"Tag: Tier 1"                   -> "Tag Tier 1"
+//	"Resume stopped (greater 90%)"  -> "Resume stopped (greater 90%)"
+//	"foo/bar:baz"                   -> "foobarbaz"
+func RuleFilename(name string) string {
+	s := strings.TrimSpace(name)
+	s = unsafeFilenameChars.ReplaceAllString(s, "")
+	s = multipleSpaces.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
