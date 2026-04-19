@@ -2,14 +2,15 @@ package core
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
 
-// TestIsRulePath covers the layout rules that decide which files participate
-// in the diff. Accepts "rules/<cat>/<file>.json" and nested categories,
-// rejects everything else.
-func TestIsRulePath(t *testing.T) {
+// TestIsRulePathQuiSync covers the layout rules for qui-sync's native
+// format — rules/<cat>/<file>.json with at least one category depth.
+func TestIsRulePathQuiSync(t *testing.T) {
 	cases := []struct {
 		path string
 		want bool
@@ -17,33 +18,159 @@ func TestIsRulePath(t *testing.T) {
 		{"rules/movies/tag-tier1.json", true},
 		{"rules/movies/subtype/foo.json", true},
 		{"rules/tv/4k/hdr/rule.json", true},
-		{"rules/movies/", false},           // no filename
-		{"rules/tag-tier1.json", false},    // no category
-		{"docs/readme.md", false},          // wrong top-level
+		{"rules/movies/", false},              // no filename
+		{"rules/tag-tier1.json", false},       // no category
+		{"docs/readme.md", false},             // wrong top-level
 		{"rules/movies/tag-tier1.yml", false}, // wrong ext
 		{"not-rules/movies/foo.json", false},
+		{"movies/Tag Tier 1.json", false}, // TRaSH path rejected
 	}
 	for _, tc := range cases {
-		if got := isRulePath(tc.path); got != tc.want {
-			t.Errorf("isRulePath(%q) = %v, want %v", tc.path, got, tc.want)
+		if got := LayoutQuiSync.IsRulePath(tc.path); got != tc.want {
+			t.Errorf("LayoutQuiSync.IsRulePath(%q) = %v, want %v", tc.path, got, tc.want)
 		}
 	}
 }
 
-// TestCategoryFromPath confirms nested categories join with "/" so the UI
-// can render them as-is without further processing.
-func TestCategoryFromPath(t *testing.T) {
+// TestIsRulePathTRaSH covers the TRaSH layout — category dir at repo
+// root (movies / series) with rule JSON files directly beneath.
+func TestIsRulePathTRaSH(t *testing.T) {
 	cases := []struct {
 		path string
-		want string
+		want bool
 	}{
-		{"rules/movies/tag-tier1.json", "movies"},
-		{"rules/movies/subtype/foo.json", "movies/subtype"},
-		{"rules/tv/4k/hdr/rule.json", "tv/4k/hdr"},
+		{"movies/Tag Tier 1.json", true},
+		{"series/Resume stopped cross-seeds.json", true},
+		{"movies/nested/foo.json", false},    // no nested under TRaSH
+		{"rules/movies/tag-tier1.json", false}, // qui-sync path rejected
+		{"docs/readme.md", false},
+		{"other/Tag.json", false}, // unknown category
 	}
 	for _, tc := range cases {
-		if got := categoryFromPath(tc.path); got != tc.want {
-			t.Errorf("categoryFromPath(%q) = %q, want %q", tc.path, got, tc.want)
+		if got := LayoutTRaSH.IsRulePath(tc.path); got != tc.want {
+			t.Errorf("LayoutTRaSH.IsRulePath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestCategoryFromPath confirms nested categories join with "/" under
+// qui-sync, and the root directory alone is the category under TRaSH.
+func TestCategoryFromPath(t *testing.T) {
+	cases := []struct {
+		layout RepoLayout
+		path   string
+		want   string
+	}{
+		{LayoutQuiSync, "rules/movies/tag-tier1.json", "movies"},
+		{LayoutQuiSync, "rules/movies/subtype/foo.json", "movies/subtype"},
+		{LayoutQuiSync, "rules/tv/4k/hdr/rule.json", "tv/4k/hdr"},
+		{LayoutTRaSH, "movies/Tag Tier 1.json", "movies"},
+		{LayoutTRaSH, "series/Resume.json", "series"},
+	}
+	for _, tc := range cases {
+		if got := tc.layout.CategoryFromPath(tc.path); got != tc.want {
+			t.Errorf("%s.CategoryFromPath(%q) = %q, want %q", tc.layout, tc.path, got, tc.want)
+		}
+	}
+}
+
+// TestRulePath confirms that writing a rule in each layout produces the
+// expected path on disk.
+func TestRulePath(t *testing.T) {
+	cases := []struct {
+		layout             RepoLayout
+		category, slug, name string
+		want               string
+	}{
+		{LayoutQuiSync, "movies", "tag-tier1", "Tag: Tier 1", "rules/movies/tag-tier1.json"},
+		{LayoutTRaSH, "movies", "tag-tier1", "Tag: Tier 1", "movies/Tag Tier 1.json"},
+		{LayoutUnknown, "movies", "tag-tier1", "Tag: Tier 1", "rules/movies/tag-tier1.json"},
+	}
+	for _, tc := range cases {
+		if got := tc.layout.RulePath(tc.category, tc.slug, tc.name); got != tc.want {
+			t.Errorf("%s.RulePath(%q,%q,%q) = %q, want %q",
+				tc.layout, tc.category, tc.slug, tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestDetectLayout builds tiny fixture repos in a temp dir and confirms
+// DetectLayout returns the expected enum for each.
+func TestDetectLayout(t *testing.T) {
+	t.Run("qui-sync layout wins when rules/ has content", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWrite(t, dir+"/rules/movies/tag-tier1.json", `{"name":"Tag: Tier 1"}`)
+		if got := DetectLayout(dir); got != LayoutQuiSync {
+			t.Errorf("got %q, want %q", got, LayoutQuiSync)
+		}
+	})
+	t.Run("TRaSH layout on movies/ at root", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWrite(t, dir+"/movies/Tag Tier 1.json", `{"name":"Tag: Tier 1"}`)
+		if got := DetectLayout(dir); got != LayoutTRaSH {
+			t.Errorf("got %q, want %q", got, LayoutTRaSH)
+		}
+	})
+	t.Run("TRaSH layout on series/ at root", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWrite(t, dir+"/series/Tag Tier 1.json", `{"name":"Tag: Tier 1"}`)
+		if got := DetectLayout(dir); got != LayoutTRaSH {
+			t.Errorf("got %q, want %q", got, LayoutTRaSH)
+		}
+	})
+	t.Run("Unknown for empty repo", func(t *testing.T) {
+		dir := t.TempDir()
+		if got := DetectLayout(dir); got != LayoutUnknown {
+			t.Errorf("got %q, want %q", got, LayoutUnknown)
+		}
+	})
+	t.Run("Unknown when rules/ and movies/ both empty", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(dir+"/rules/movies", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(dir+"/movies", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if got := DetectLayout(dir); got != LayoutUnknown {
+			t.Errorf("got %q, want %q", got, LayoutUnknown)
+		}
+	})
+	t.Run("qui-sync wins over TRaSH when both somehow coexist", func(t *testing.T) {
+		dir := t.TempDir()
+		mustWrite(t, dir+"/rules/movies/tag-tier1.json", `{"name":"Tag: Tier 1"}`)
+		mustWrite(t, dir+"/movies/Tag Tier 1.json", `{"name":"Tag: Tier 1"}`)
+		if got := DetectLayout(dir); got != LayoutQuiSync {
+			t.Errorf("got %q, want %q (qui-sync prefix should win)", got, LayoutQuiSync)
+		}
+	})
+}
+
+// mustWrite is a tiny test helper that creates parent dirs and writes
+// content to path, failing the test on any error.
+func mustWrite(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestTRaSHFilename covers the filesystem-safety rules we apply when
+// converting a rule name into a TRaSH-style filename.
+func TestTRaSHFilename(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Tag: Tier 1", "Tag Tier 1"},
+		{"Resume stopped cross-seeds (greater 90%)", "Resume stopped cross-seeds (greater 90%)"},
+		{"foo/bar:baz", "foobarbaz"},
+		{"  leading  ", "leading"},
+		{"double  space", "double space"},
+	}
+	for _, tc := range cases {
+		if got := TRaSHFilename(tc.in); got != tc.want {
+			t.Errorf("TRaSHFilename(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

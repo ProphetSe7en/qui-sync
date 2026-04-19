@@ -177,51 +177,73 @@ type repoRule struct {
 	Raw       []byte // full JSON as on disk
 }
 
-// listRepoRules walks <clone>/rules/ and parses every JSON file.
+// listRepoRules walks a subscription clone and parses every rule file.
+// Respects the repo's layout so it works equally on qui-sync-native
+// repos (rules/<cat>/<slug>.json) and TRaSH-style repos
+// (<cat>/<name>.json at the root). If neither layout is detected the
+// repo is treated as empty.
 func listRepoRules(cloneDir string) ([]repoRule, error) {
-	rulesDir := filepath.Join(cloneDir, "rules")
-	if _, err := os.Stat(rulesDir); os.IsNotExist(err) {
-		return nil, nil // empty repo — valid
+	layout := DetectLayout(cloneDir)
+	if layout == LayoutUnknown {
+		return nil, nil
 	}
 	var out []repoRule
-	err := filepath.Walk(rulesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	for _, root := range layout.WalkRoots() {
+		rulesDir := filepath.Join(cloneDir, root)
+		if _, err := os.Stat(rulesDir); os.IsNotExist(err) {
+			continue
 		}
-		if info.IsDir() || !strings.HasSuffix(info.Name(), ".json") {
+		err := filepath.Walk(rulesDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() || !strings.HasSuffix(info.Name(), ".json") {
+				return nil
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			var parsed struct {
+				Slug      string `json:"_slug"`
+				Name      string `json:"name"`
+				SortOrder int    `json:"sortOrder"`
+			}
+			if err := json.Unmarshal(data, &parsed); err != nil {
+				// Skip unparseable files — they'd need maintainer
+				// attention on the export side, not our problem here.
+				return nil
+			}
+			rel, _ := filepath.Rel(cloneDir, path)
+			rel = filepath.ToSlash(rel)
+			cat := layout.CategoryFromPath(rel)
+
+			// Slug identity: qui-sync files carry it explicitly in
+			// "_slug"; TRaSH files don't, so we re-slugify the rule
+			// name to keep downstream state lookups consistent.
+			slug := parsed.Slug
+			if slug == "" {
+				if layout == LayoutTRaSH && parsed.Name != "" {
+					slug = Slugify(parsed.Name)
+				} else {
+					slug = strings.TrimSuffix(filepath.Base(path), ".json")
+				}
+			}
+			out = append(out, repoRule{
+				RepoPath:  cat + "/" + slug,
+				Category:  cat,
+				Slug:      slug,
+				Name:      parsed.Name,
+				SortOrder: parsed.SortOrder,
+				Raw:       data,
+			})
 			return nil
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		var parsed struct {
-			Slug      string `json:"_slug"`
-			Name      string `json:"name"`
-			SortOrder int    `json:"sortOrder"`
-		}
-		if err := json.Unmarshal(data, &parsed); err != nil {
-			// Skip unparseable files — they'd need maintainer attention
-			// on the export side, not our problem here.
-			return nil
-		}
-		rel, _ := filepath.Rel(rulesDir, path)
-		cat := filepath.Dir(rel)
-		slug := strings.TrimSuffix(filepath.Base(path), ".json")
-		if parsed.Slug != "" {
-			slug = parsed.Slug
-		}
-		out = append(out, repoRule{
-			RepoPath:  cat + "/" + slug,
-			Category:  cat,
-			Slug:      slug,
-			Name:      parsed.Name,
-			SortOrder: parsed.SortOrder,
-			Raw:       data,
 		})
-		return nil
-	})
-	return out, err
+		if err != nil {
+			return out, err
+		}
+	}
+	return out, nil
 }
 
 // PlanSync builds the plan by walking the cloned repo and joining against

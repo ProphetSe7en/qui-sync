@@ -355,6 +355,12 @@
                 </div>
               </template>
 
+              <template x-if="ruleDiff && ruleDiff.layout && !ruleDiff.no_repo">
+                <div class="dim" style="font-size:var(--font-xs); margin-bottom:8px">
+                  Detected layout: <b x-text="ruleDiff.layout === 'trash' ? 'TRaSH (movies/&lt;Name&gt;.json)' : ruleDiff.layout === 'qui-sync' ? 'qui-sync (rules/&lt;cat&gt;/&lt;slug&gt;.json)' : 'new repo — will use qui-sync format'"></b>
+                </div>
+              </template>
+
               <template x-if="ruleDiff && ruleDiff.no_remote && !ruleDiff.no_repo">
                 <div class="dim" style="font-size:var(--font-xs); margin-bottom:8px">
                   No remote branch to compare against yet — showing every local rule as <b>added</b>. After the first successful push this view will switch to the normal local-vs-remote diff.

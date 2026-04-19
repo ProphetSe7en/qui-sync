@@ -80,6 +80,13 @@ type RuleDiffResult struct {
 	Modified []RuleDiff `json:"modified"`
 	Removed  []RuleDiff `json:"removed"`
 
+	// Layout is the file layout detected in the working tree. The UI
+	// renders this so the user knows whether their exports land in the
+	// qui-sync format ("rules/<cat>/<slug>.json") or the TRaSH format
+	// ("<cat>/<name>.json") — and notices when the two sides of the
+	// diff use different layouts.
+	Layout RepoLayout `json:"layout"`
+
 	// NoRemote is true when the repo has no remote branch to compare
 	// against (no origin, branch does not exist, never pushed). In that
 	// state every local rule appears as "added" so the user can still
@@ -94,8 +101,10 @@ type RuleDiffResult struct {
 
 // ComputeRepoRuleDiff produces the full rule-level diff for the repo at
 // repoDir. It compares the working tree (including uncommitted changes)
-// against origin/<current-branch>. Files that are not under rules/ are
-// ignored — the share-repo layout is rules/<category>/<slug>.json.
+// against origin/<current-branch>. The layout of the local repo is
+// detected first so rules in either the qui-sync format
+// ("rules/<cat>/<slug>.json") or the TRaSH format ("<cat>/<name>.json")
+// are handled correctly.
 func ComputeRepoRuleDiff(ctx context.Context, repoDir string) (*RuleDiffResult, error) {
 	result := &RuleDiffResult{
 		Added:    []RuleDiff{},
@@ -108,6 +117,9 @@ func ComputeRepoRuleDiff(ctx context.Context, repoDir string) (*RuleDiffResult, 
 		return result, nil
 	}
 
+	layout := DetectLayout(repoDir)
+	result.Layout = layout
+
 	branch, err := runGit(ctx, repoDir, nil, "rev-parse", "--abbrev-ref", "HEAD")
 	if err != nil {
 		return nil, fmt.Errorf("determine branch: %w", err)
@@ -119,7 +131,7 @@ func ComputeRepoRuleDiff(ctx context.Context, repoDir string) (*RuleDiffResult, 
 	// as added and skip remote enumeration.
 	if _, err := runGit(ctx, repoDir, nil, "rev-parse", "--verify", remoteRef); err != nil {
 		result.NoRemote = true
-		locals, err := walkLocalRules(repoDir)
+		locals, err := walkLocalRules(repoDir, layout)
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +142,7 @@ func ComputeRepoRuleDiff(ctx context.Context, repoDir string) (*RuleDiffResult, 
 		return result, nil
 	}
 
-	locals, err := walkLocalRules(repoDir)
+	locals, err := walkLocalRules(repoDir, layout)
 	if err != nil {
 		return nil, err
 	}
@@ -138,15 +150,16 @@ func ComputeRepoRuleDiff(ctx context.Context, repoDir string) (*RuleDiffResult, 
 	// Index of remote file paths (relative to repo root). Uses -z so paths
 	// containing spaces, quotes, or other special chars come through as
 	// literal NUL-separated strings instead of git's default C-style
-	// quoting — otherwise "foo bar.json" would be quoted on the remote
-	// side and never match the literal path produced by filepath.WalkDir.
+	// quoting — TRaSH filenames like "Resume stopped cross-seeds (greater
+	// 90%).json" would otherwise be quoted on the remote side and never
+	// match the literal path produced by filepath.WalkDir locally.
 	remoteOut, err := runGit(ctx, repoDir, nil, "ls-tree", "-r", "-z", "--name-only", remoteRef)
 	if err != nil {
 		return nil, fmt.Errorf("list remote tree: %w", err)
 	}
 	remoteSet := map[string]bool{}
 	for _, p := range strings.Split(remoteOut, "\x00") {
-		if p != "" && isRulePath(p) {
+		if p != "" && layout.IsRulePath(p) {
 			remoteSet[p] = true
 		}
 	}
@@ -182,7 +195,7 @@ func ComputeRepoRuleDiff(ctx context.Context, repoDir string) (*RuleDiffResult, 
 		if err != nil {
 			return nil, fmt.Errorf("read remote %s: %w", remotePath, err)
 		}
-		result.Removed = append(result.Removed, newRemovedRuleDiff(remotePath, remoteBytes))
+		result.Removed = append(result.Removed, newRemovedRuleDiff(remotePath, remoteBytes, layout))
 	}
 
 	sortResult(result)
@@ -198,80 +211,68 @@ type localRuleFile struct {
 	content  []byte
 }
 
-func walkLocalRules(repoDir string) ([]localRuleFile, error) {
+// walkLocalRules enumerates every rule file in the working tree that
+// matches the given layout. The layout dictates which top-level
+// directories are walked (WalkRoots) and which relative paths qualify
+// as rule files (IsRulePath).
+func walkLocalRules(repoDir string, layout RepoLayout) ([]localRuleFile, error) {
 	var out []localRuleFile
-	rulesRoot := filepath.Join(repoDir, "rules")
-	if _, err := os.Stat(rulesRoot); err != nil {
-		if os.IsNotExist(err) {
-			return out, nil
+	for _, root := range layout.WalkRoots() {
+		rulesRoot := filepath.Join(repoDir, root)
+		if _, err := os.Stat(rulesRoot); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
 		}
-		return nil, err
-	}
-	err := filepath.WalkDir(rulesRoot, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() || filepath.Ext(p) != ".json" {
+		err := filepath.WalkDir(rulesRoot, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() || filepath.Ext(p) != ".json" {
+				return nil
+			}
+			rel, err := filepath.Rel(repoDir, p)
+			if err != nil {
+				return err
+			}
+			// filepath.WalkDir yields OS-native separators. Normalise
+			// to "/" for consistent comparison with the forward-slash
+			// paths git uses.
+			rel = filepath.ToSlash(rel)
+			if !layout.IsRulePath(rel) {
+				return nil
+			}
+			b, err := os.ReadFile(p)
+			if err != nil {
+				return err
+			}
+			out = append(out, localRuleFile{
+				relPath:  rel,
+				category: layout.CategoryFromPath(rel),
+				slug:     slugFromPath(rel, layout),
+				content:  b,
+			})
 			return nil
-		}
-		rel, err := filepath.Rel(repoDir, p)
-		if err != nil {
-			return err
-		}
-		// filepath.WalkDir yields OS-native separators. Normalise to "/"
-		// for consistent comparison with the forward-slash paths git uses.
-		rel = filepath.ToSlash(rel)
-		if !isRulePath(rel) {
-			return nil
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		out = append(out, localRuleFile{
-			relPath:  rel,
-			category: categoryFromPath(rel),
-			slug:     slugFromPath(rel),
-			content:  b,
 		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
+		if err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }
 
-// isRulePath returns true when p is a valid rule file in the share-repo
-// layout — "rules/.../<slug>.json" with at least one subdirectory depth.
-// Nested categories like "rules/movies/4k/foo.json" are accepted; the full
-// path between "rules/" and the filename becomes the category string.
-func isRulePath(p string) bool {
-	if !strings.HasPrefix(p, "rules/") {
-		return false
+// slugFromPath derives a stable slug identifier from a rule file path.
+// For the qui-sync layout the filename IS the slug (kebab-case). For the
+// TRaSH layout the filename is the human-readable rule name with unsafe
+// characters removed — we re-slugify it so every caller sees a
+// consistent kebab-case ID regardless of which format the file came from.
+func slugFromPath(relPath string, layout RepoLayout) string {
+	base := strings.TrimSuffix(filepath.Base(relPath), filepath.Ext(relPath))
+	if layout == LayoutTRaSH {
+		return Slugify(base)
 	}
-	if filepath.Ext(p) != ".json" {
-		return false
-	}
-	// Require at least rules/<something>/<file>.json — three parts.
-	parts := strings.Split(p, "/")
-	return len(parts) >= 3 && parts[len(parts)-1] != ""
-}
-
-// categoryFromPath returns the directory segment(s) between "rules/" and
-// the filename. For "rules/movies/tag-tier1.json" it returns "movies";
-// for "rules/movies/4k/foo.json" it returns "movies/4k".
-func categoryFromPath(relPath string) string {
-	parts := strings.Split(relPath, "/")
-	if len(parts) < 3 {
-		return ""
-	}
-	return strings.Join(parts[1:len(parts)-1], "/")
-}
-
-func slugFromPath(relPath string) string {
-	base := filepath.Base(relPath)
-	return strings.TrimSuffix(base, filepath.Ext(base))
+	return base
 }
 
 // gitShowFile returns the content of a file at a specific git ref using
@@ -303,13 +304,15 @@ func newAddedRuleDiff(f localRuleFile) RuleDiff {
 
 // newRemovedRuleDiff builds a RuleDiff for a rule that exists on the
 // remote but not locally. BeforeJSON carries the full remote content so
-// the user can see what will disappear from the remote after push.
-func newRemovedRuleDiff(relPath string, remoteBytes []byte) RuleDiff {
-	slug := slugFromPath(relPath)
+// the user can see what will disappear from the remote after push. The
+// layout parameter selects the right category extractor and slug
+// derivation for the remote path's layout.
+func newRemovedRuleDiff(relPath string, remoteBytes []byte, layout RepoLayout) RuleDiff {
+	slug := slugFromPath(relPath, layout)
 	name := extractRuleName(remoteBytes, slug)
 	return RuleDiff{
 		Path:       relPath,
-		Category:   categoryFromPath(relPath),
+		Category:   layout.CategoryFromPath(relPath),
 		Slug:       slug,
 		Name:       name,
 		Change:     ChangeRemoved,
