@@ -932,7 +932,7 @@
                       <span x-text="filteredPlanRules(sub.slug).length"></span> of
                       <span x-text="planBySub[sub.slug].rules.length"></span> rules
                       <span x-show="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length"
-                            x-text="' · ' + planBySub[sub.slug].orphans.length + ' orphans'"></span>
+                            x-text="' · ' + planBySub[sub.slug].orphans.length + ' in Qui only'"></span>
                       <span x-show="planBySub[sub.slug].source_sha"
                             x-text="' · HEAD ' + planBySub[sub.slug].source_sha.slice(0,7)"></span>
                     </span>
@@ -1001,7 +1001,10 @@
                   <template x-if="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length">
                     <div style="padding:16px">
                       <div class="dim" style="font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px">
-                        Orphans in Qui — not in this repo (MVP leaves these alone)
+                        Rules only in your Qui — not in this subscription
+                      </div>
+                      <div class="dim" style="font-size:var(--font-xs); margin-bottom:8px">
+                        These are your own rules that the maintainer's repo does not include. Sync does not touch them — they stay in your Qui exactly as they are.
                       </div>
                       <template x-for="o in planBySub[sub.slug].orphans" :key="o.qui_rule_id">
                         <div class="dim" style="font-size:var(--font-sm)">
