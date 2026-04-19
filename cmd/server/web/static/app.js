@@ -823,7 +823,21 @@ function quiSyncApp() {
         const nU = result.updated ? result.updated.length : 0;
         const nF = result.failed ? result.failed.length : 0;
         if (nF > 0) {
-          this.toast('error', 'Applied with errors: ' + nC + ' created, ' + nU + ' updated, ' + nF + ' failed');
+          // Surface the actual error reason so the user knows WHY the
+          // rule failed — the backend populates Error on every failed
+          // outcome but the summary counts alone aren't actionable.
+          // Log the full list for inspection; show the first one in
+          // the toast so there is something to search for.
+          console.warn('qui-sync apply failures:', result.failed);
+          const first = result.failed[0] || {};
+          const firstDetail = (first.name || first.repo_path || 'rule') + ': ' + (first.error || 'unknown error');
+          const more = nF > 1 ? ' (+' + (nF - 1) + ' more — see browser console)' : '';
+          // Longer TTL (20s) so the user has time to read the actual
+          // error reason before it disappears. Default toast TTL of
+          // 6s is not enough for multi-line apply failures.
+          this.toast('error',
+            'Applied with errors: ' + nC + ' created, ' + nU + ' updated, ' + nF + ' failed — ' + firstDetail + more,
+            20000);
         } else {
           this.toast('info', 'Applied: ' + nC + ' created, ' + nU + ' updated');
         }
