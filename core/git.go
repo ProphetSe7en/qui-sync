@@ -116,10 +116,12 @@ func FetchSubscription(ctx context.Context, destDir, branch string, auth GitAuth
 	if br == "" {
 		br = "HEAD"
 	}
-	// Fetch via a transient URL override — doesn't modify .git/config.
+	// Fetch via the URL with embedded credentials. "-c remote.origin.url=X"
+	// has been observed to send anonymous requests in some git versions —
+	// passing the URL positionally is the reliable form and leaves
+	// .git/config untouched.
 	if _, err := runGit(ctx, destDir, env,
-		"-c", "remote.origin.url="+effectiveURL,
-		"fetch", "--depth", "1", "origin", br); err != nil {
+		"fetch", "--depth", "1", effectiveURL, br); err != nil {
 		return "", err
 	}
 	if _, err := runGit(ctx, destDir, env, "reset", "--hard", "FETCH_HEAD"); err != nil {
@@ -311,10 +313,16 @@ func PullRepo(ctx context.Context, repoDir, token string) error {
 	}
 	branch = strings.TrimSpace(branch)
 
-	if _, err := runGit(ctx, repoDir, env,
-		"-c", "remote.origin.url="+effectiveURL,
-		"pull", "--ff-only", "origin", branch); err != nil {
+	// Fetch from the URL that has the PAT embedded, then fast-forward
+	// merge locally. Pushing/pulling via "-c remote.origin.url=X" has
+	// been observed to send anonymous requests in some git versions
+	// (the credential override doesn't always propagate to the HTTPS
+	// backend) — fetching via an explicit URL bypasses that path.
+	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, branch); err != nil {
 		return fmt.Errorf("pull: %w", err)
+	}
+	if _, err := runGit(ctx, repoDir, nil, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
+		return fmt.Errorf("pull (merge): %w", err)
 	}
 	return nil
 }
@@ -358,9 +366,12 @@ func PushRepo(ctx context.Context, repoDir, token string) error {
 	}
 	branch = strings.TrimSpace(branch)
 
-	_, err = runGit(ctx, repoDir, env,
-		"-c", "remote.origin.url="+effectiveURL,
-		"push", "origin", branch)
+	// Push directly to the URL with embedded PAT, bypassing the remote
+	// config entirely. "-c remote.origin.url=X" has been observed to
+	// send anonymous requests in some git versions — the override does
+	// not always propagate to the HTTPS credential resolution. Passing
+	// the URL as a positional argument to git push is the reliable form.
+	_, err = runGit(ctx, repoDir, env, "push", effectiveURL, branch)
 	if err != nil {
 		return fmt.Errorf("push: %w", err)
 	}
@@ -418,7 +429,15 @@ func runGit(ctx context.Context, dir string, extraEnv []string, args ...string) 
 	// instead of trying to read interactively from a TTY that does not exist
 	// in the container — the cryptic "could not read Username ... No such
 	// device or address" error becomes the clean "terminal prompts disabled".
-	base := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/true")
+	//
+	// GIT_ASKPASS=/bin/false signals "no external credential helper
+	// available" with a non-zero exit. We deliberately do NOT use
+	// /bin/true here — /bin/true exits 0 with empty stdout, which git
+	// interprets as "no credentials" and quietly sends the request
+	// anonymously even when the URL already contains x-access-token
+	// basic auth. /bin/false forces git to either use the URL creds or
+	// error out cleanly.
+	base := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/false")
 	cmd.Env = append(base, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
