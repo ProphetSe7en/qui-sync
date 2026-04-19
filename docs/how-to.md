@@ -101,12 +101,13 @@ When you export a rule, qui-sync transforms it for sharing:
    - `+ Added` — new rules not yet in the repo
    - `~ Updated (conditions, sortOrder)` — changed rules, with which fields differ
    - `R Renamed` — rules whose name changed in Qui
-   - `- Removed` — rules deleted from Qui
-7. Click **Commit export** to write the changes:
+   - `⌫ Archived` — rules deleted from Qui. These move to `/data/repo/archive/<folder>/<Rule Name>.json` instead of being removed — history stays visible on GitHub. Consumers syncing from your repo never apply archived rules.
+7. (optional) Fill in **Note for this export** — a short explanation of *why* the rules changed. The note becomes the top paragraph of today's entry in `CHANGELOG.md`, above the auto-generated rule list. One note per export; cleared automatically on success.
+8. Click **Commit export** to write the changes:
    - Files are written to `/data/repo/<folder>/<Rule Name>.json` — the same layout used by community-maintained qui automation repos, so your repo is compatible with anyone else using qui-sync
    - A git commit is made automatically
    - Old versions are backed up to `/data/backups/`
-   - CHANGELOG.md is updated
+   - CHANGELOG.md is updated, with your note at the top of today's entry if you provided one
 
 ### Pushing to GitHub
 
@@ -239,9 +240,26 @@ This lets you test the full Sync flow (Pull → Plan → Apply) without pushing 
 
 ## Backup & Restore
 
-> **Coming soon.** This will be a separate tab for 1:1 full backups of all Qui automations — including trackers, enabled state, and everything else. No stripping, no placeholders. Pure backup/restore for disaster recovery.
+Full 1:1 snapshots of every automation in a Qui instance, including trackers, enabled state, and intervals — no stripping, no placeholders.
 
-Currently, qui-sync keeps versioned backups of changed rules in `/data/backups/` (old file versions before overwrite). But there's no full-instance backup or restore UI yet.
+### Manual backup
+
+Backup tab → click **Backup now** on an instance row. qui-sync writes a timestamped snapshot to `/data/backups-full/<instance-id>/<timestamp>/` with one JSON file per rule.
+
+### Scheduled backups
+
+Settings tab → **Backup** panel:
+
+- **Schedule** — how often the background worker snapshots every configured instance. Choose off / 6h / 12h / 24h / 3d / 7d. Default is off.
+- **Retention days** — snapshots older than this are pruned after the next run. 0 = never expire by age.
+- **Keep last N** — minimum number of snapshots kept per instance regardless of age. 0 = no minimum.
+- **Gitignored** — keeps backups out of any git commits in the share-repo.
+
+When both retention rules are set, they combine: a snapshot is pruned only when it is older than Retention days AND outside the Keep-last-N floor. This protects the most recent N from age-based eviction even if they're all ancient.
+
+### Restore
+
+Pick any backup from the Backup tab and restore it into the same or a different Qui instance. Existing rules with matching names are updated; new rules are created. All fields restore verbatim.
 
 ---
 
