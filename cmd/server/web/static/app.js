@@ -27,7 +27,7 @@ function quiSyncApp() {
     // Settings tab — drafts live outside `config` so user can edit without
     // affecting the displayed config until Save is clicked.
     quiDraft: { url: '', apiKey: '' },
-    backupDraft: { retention_days: 90, gitignored: true },
+    backupDraft: { interval: 'off', retention_days: 90, keep_last_n: 0, gitignored: true },
     addInstanceOpen: false,
     addInstanceDraft: { qui_instance_id: 0, category: '' },
     availableQuiInstances: [],
@@ -425,9 +425,12 @@ function quiSyncApp() {
     },
     resetBackupDraft() {
       if (!this.config) return;
+      const b = this.config.backup || {};
       this.backupDraft = {
-        retention_days: this.config.backup.retention_days || 0,
-        gitignored: !!this.config.backup.gitignored,
+        interval: b.interval || 'off',
+        retention_days: b.retention_days || 0,
+        keep_last_n: b.keep_last_n || 0,
+        gitignored: !!b.gitignored,
       };
     },
 

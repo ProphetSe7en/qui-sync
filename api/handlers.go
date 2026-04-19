@@ -293,8 +293,10 @@ func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
 // ---- Backup config edit ----
 
 type backupConfigReq struct {
-	RetentionDays int  `json:"retention_days"`
-	Gitignored    bool `json:"gitignored"`
+	Interval      string `json:"interval"`
+	RetentionDays int    `json:"retention_days"`
+	KeepLastN     int    `json:"keep_last_n"`
+	Gitignored    bool   `json:"gitignored"`
 }
 
 func (s *Server) handleUpdateBackupConfig(w http.ResponseWriter, r *http.Request) {
@@ -307,9 +309,25 @@ func (s *Server) handleUpdateBackupConfig(w http.ResponseWriter, r *http.Request
 		writeErr(w, 400, fmt.Errorf("retention_days must be 0-3650"))
 		return
 	}
+	if req.KeepLastN < 0 || req.KeepLastN > 10000 {
+		writeErr(w, 400, fmt.Errorf("keep_last_n must be 0-10000"))
+		return
+	}
+	// Interval is validated by ParseBackupInterval returning 0 for
+	// unknowns; we also accept "" / "off" explicitly as disabled.
+	iv := strings.TrimSpace(strings.ToLower(req.Interval))
+	if iv != "" && iv != "off" && core.ParseBackupInterval(iv) == 0 {
+		writeErr(w, 400, fmt.Errorf("interval must be one of: off, 6h, 12h, 24h, 3d, 7d"))
+		return
+	}
+	if iv == "off" {
+		iv = ""
+	}
 	cfg := s.getConfig()
 	newCfg := *cfg
+	newCfg.Backup.Interval = iv
 	newCfg.Backup.RetentionDays = req.RetentionDays
+	newCfg.Backup.KeepLastN = req.KeepLastN
 	newCfg.Backup.Gitignored = req.Gitignored
 	if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
 		writeErr(w, 500, err)

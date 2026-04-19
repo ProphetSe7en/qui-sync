@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/prophetse7en/qui-sync/core"
 )
@@ -28,11 +27,13 @@ func backupsFullDir(cfg *core.Config) string {
 }
 
 func instanceBackupDir(cfg *core.Config, instanceID int) string {
-	return filepath.Join(backupsFullDir(cfg), strconv.Itoa(instanceID))
+	return core.InstanceBackupDir(cfg, instanceID)
 }
 
 // handleCreateBackup dumps all automations from a Qui instance into a
 // timestamped directory. Full 1:1 — no stripping, no placeholders.
+// Shares its on-disk shape with the background scheduler via
+// core.CreateBackup so manual and scheduled snapshots are identical.
 func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 	idStr := r.PathValue("id")
 	instanceID, err := strconv.Atoi(idStr)
@@ -48,36 +49,16 @@ func (s *Server) handleCreateBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rules, err := client.ListAutomations(r.Context(), instanceID)
+	dir, ruleCount, err := core.CreateBackup(r.Context(), cfg, client, instanceID)
 	if err != nil {
-		writeErr(w, 502, err)
-		return
-	}
-
-	ts := time.Now().Format("2006-01-02_15-04-05")
-	dir := filepath.Join(instanceBackupDir(cfg, instanceID), ts)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-
-	for _, rule := range rules {
-		data, err := json.MarshalIndent(json.RawMessage(rule.Raw), "", "  ")
-		if err != nil {
-			data = rule.Raw
-		}
-		slug := core.Slugify(rule.Name)
-		fname := fmt.Sprintf("%s_%d.json", slug, rule.ID)
-		if err := os.WriteFile(filepath.Join(dir, fname), data, 0o644); err != nil {
-			writeErr(w, 500, fmt.Errorf("write %s: %w", fname, err))
-			return
-		}
-	}
-
+	ts := filepath.Base(dir)
 	writeJSON(w, 200, map[string]any{
 		"instance_id": instanceID,
 		"timestamp":   ts,
-		"rule_count":  len(rules),
+		"rule_count":  ruleCount,
 	})
 }
 

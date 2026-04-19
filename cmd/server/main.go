@@ -66,6 +66,12 @@ func main() {
 	worker := core.NewAutoSyncWorker(srv.GetConfig, srv.GetConsumerState, srv.NewClient)
 	go worker.Start(ctx)
 
+	// Scheduled full-instance backups. The worker polls every minute
+	// and dispatches when cfg.Backup.Interval has elapsed — disabled
+	// by default until the user configures it via Settings.
+	backupScheduler := core.NewBackupScheduler(srv.GetConfig, srv.NewClient)
+	go backupScheduler.Start(ctx)
+
 	errCh := make(chan error, 1)
 	go func() {
 		log.Printf("qui-sync server %s — listening on %s (config: %s)", version, *addr, *cfgPath)

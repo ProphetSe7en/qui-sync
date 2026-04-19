@@ -725,14 +725,32 @@
       </div>
       <div class="panel-body">
         <div class="form-grid">
+          <label>Schedule</label>
+          <select class="input" style="width:180px" x-model="backupDraft.interval">
+            <option value="off">Off (manual only)</option>
+            <option value="6h">Every 6 hours</option>
+            <option value="12h">Every 12 hours</option>
+            <option value="24h">Every 24 hours</option>
+            <option value="3d">Every 3 days</option>
+            <option value="7d">Every 7 days</option>
+          </select>
+
           <label>Retention days</label>
           <input class="input" type="number" min="0" max="3650" style="width:100px"
                  x-model.number="backupDraft.retention_days">
+
+          <label>Keep last N</label>
+          <input class="input" type="number" min="0" max="10000" style="width:100px"
+                 x-model.number="backupDraft.keep_last_n">
+
           <label>Gitignored</label>
           <input type="checkbox" x-model="backupDraft.gitignored">
         </div>
-        <p class="dim" style="font-size:var(--font-xs); margin-top:8px">
-          Backups live in <code>&lt;repo&gt;/backup/</code>. 0 = never delete. Typical: 30-90.
+        <p class="dim" style="font-size:var(--font-xs); margin-top:8px; line-height:1.5">
+          <b>Schedule</b> — how often the background worker snapshots every configured Qui instance. Off means manual backups only.<br>
+          <b>Retention days</b> — snapshots older than this are deleted after the next scheduled run. 0 = never expire by age.<br>
+          <b>Keep last N</b> — minimum number of snapshots kept per instance regardless of age. 0 = no minimum. When both are set, snapshots must satisfy both rules to be evicted (old AND outside the floor).<br>
+          Backups live in <code>&lt;repo&gt;/../backups-full/</code>. Full 1:1 copies including trackers — never pushed to GitHub when gitignored is on.
         </p>
         <div style="margin-top:12px; display:flex; gap:8px">
           <button class="btn btn-primary" @click="saveBackupConfig()">Save</button>

@@ -60,8 +60,26 @@ type Mappings struct {
 }
 
 type BackupConfig struct {
-	RetentionDays int  `yaml:"retention_days"`
-	Gitignored    bool `yaml:"gitignored"`
+	// Interval is how often the background scheduler runs a backup of
+	// every configured Qui instance. Values: "off" / "" (scheduler
+	// disabled, manual backups only), "12h", "24h", "7d". See
+	// ParseBackupInterval for the full list.
+	Interval string `yaml:"interval,omitempty"`
+
+	// RetentionDays is the age threshold for automatic pruning — any
+	// snapshot older than this many days is a candidate for deletion.
+	// A snapshot is only removed if it is BOTH older than RetentionDays
+	// AND there are more than KeepLastN snapshots for its instance; the
+	// two rules combine so we never prune below the "keep last N" floor
+	// even if every snapshot is ancient.
+	RetentionDays int `yaml:"retention_days"`
+
+	// KeepLastN is the minimum number of snapshots to keep per instance
+	// regardless of age. 0 or negative means "no minimum — rely on
+	// RetentionDays alone".
+	KeepLastN int `yaml:"keep_last_n,omitempty"`
+
+	Gitignored bool `yaml:"gitignored"`
 }
 
 type SourceConfig struct {
@@ -198,6 +216,26 @@ func ParsePullInterval(s string) time.Duration {
 		return 12 * time.Hour
 	case "24h":
 		return 24 * time.Hour
+	}
+	return 0 // off or unrecognised
+}
+
+// ParseBackupInterval is the scheduler-friendly cadence table for the
+// Backup & Restore worker. Supports longer intervals than the pull
+// interval since full-instance snapshots are heavier and rarely need
+// sub-hour cadence. Returns 0 for "off" or unrecognised values.
+func ParseBackupInterval(s string) time.Duration {
+	switch strings.TrimSpace(strings.ToLower(s)) {
+	case "6h":
+		return 6 * time.Hour
+	case "12h":
+		return 12 * time.Hour
+	case "24h":
+		return 24 * time.Hour
+	case "3d":
+		return 3 * 24 * time.Hour
+	case "7d":
+		return 7 * 24 * time.Hour
 	}
 	return 0 // off or unrecognised
 }
