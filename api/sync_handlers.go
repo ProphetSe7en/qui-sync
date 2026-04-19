@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/prophetse7en/qui-sync/core"
 	"golang.org/x/crypto/ssh"
@@ -386,22 +388,94 @@ type pushTokenReq struct {
 	Token string `json:"token"`
 }
 
+// validatePushToken calls GitHub's /user endpoint with the given PAT so a
+// bad token is caught in Settings rather than surfacing as a cryptic TTY
+// error at push time. Returns the authenticated login on success so the
+// UI can show "Validated as <user>". The caller's context propagates all
+// the way through so a disconnected browser cancels the outbound call.
+func validatePushToken(ctx context.Context, token string) (login string, err error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("github unreachable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 401 {
+		return "", fmt.Errorf("GitHub rejected the token (401 Unauthorized) — it may be revoked, expired, or mistyped")
+	}
+	if resp.StatusCode == 403 {
+		return "", fmt.Errorf("GitHub denied the request (403) — if you use a fine-grained PAT, check that it has access to the target repository")
+	}
+	if resp.StatusCode >= 400 {
+		return "", fmt.Errorf("GitHub returned HTTP %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Login string `json:"login"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", fmt.Errorf("parse response: %w", err)
+	}
+	if body.Login == "" {
+		return "", fmt.Errorf("GitHub did not return a login name")
+	}
+	return body.Login, nil
+}
+
 func (s *Server) handleSavePushToken(w http.ResponseWriter, r *http.Request) {
 	var req pushTokenReq
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512)).Decode(&req); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	if req.Token == "" {
+	token := strings.TrimSpace(req.Token)
+	if token == "" {
 		writeErr(w, 400, fmt.Errorf("token is required"))
 		return
 	}
+	login, err := validatePushToken(r.Context(), token)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
 	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
-	if err := os.WriteFile(tokenPath, []byte(req.Token+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(tokenPath, []byte(token+"\n"), 0o600); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "saved"})
+	writeJSON(w, 200, map[string]string{"status": "saved", "login": login})
+}
+
+// handleValidatePushToken re-tests the stored token on demand. Used by the
+// "Validate" button so the user can confirm a previously-saved token is
+// still accepted by GitHub without re-typing it.
+func (s *Server) handleValidatePushToken(w http.ResponseWriter, r *http.Request) {
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		writeErr(w, 400, fmt.Errorf("no token stored yet"))
+		return
+	}
+	token := strings.TrimSpace(string(tokenBytes))
+	if token == "" {
+		writeErr(w, 400, fmt.Errorf("stored token is empty"))
+		return
+	}
+	login, err := validatePushToken(r.Context(), token)
+	if err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "valid", "login": login})
 }
 
 // ---- git remote setup ----

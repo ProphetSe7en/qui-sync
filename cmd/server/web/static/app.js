@@ -50,6 +50,26 @@ function quiSyncApp() {
     backingUp: {},
     restoringBackup: false,
     repoStatus: null,
+
+    // Rule-level diff of working tree vs origin/<branch> — the structured
+    // pre-push review. Kept separate from repoStatus because the server
+    // recomputes the full tree-walk, which is heavier than status.
+    ruleDiff: null,
+    ruleDiffLoading: false,
+    ruleDiffError: '',
+    // Set of diff row paths currently expanded to show field details or
+    // full-rule JSON. Keyed by change-type + path to keep added/removed of
+    // the same rule path independent.
+    ruleDiffExpanded: {},
+    // Per-row viewer mode inside an expanded Modified row:
+    //   "" (default) = structured field list
+    //   "json"       = raw before/after JSON blocks (escape hatch)
+    ruleDiffViewMode: {},
+
+    // Draft state for push-token save with live validation feedback.
+    pushTokenValidating: false,
+    pushTokenValidated: '',       // login name on success, '' otherwise
+    pushTokenValidateError: '',
     loadingRepoStatus: false,
     pushingRepo: false,
     pullingRepo: false,
@@ -855,6 +875,98 @@ function quiSyncApp() {
         this.toast('error', 'Repo status: ' + e.message);
       } finally {
         this.loadingRepoStatus = false;
+      }
+      // Rule-level diff always runs after the summary so the user sees
+      // both counts and structure from a single Refresh click.
+      this.loadRuleDiff();
+    },
+
+    async loadRuleDiff() {
+      this.ruleDiffLoading = true;
+      this.ruleDiffError = '';
+      try {
+        this.ruleDiff = await this.apiFetch('/api/repo/rule-diff');
+      } catch (e) {
+        this.ruleDiffError = e.message;
+        this.ruleDiff = null;
+      } finally {
+        this.ruleDiffLoading = false;
+      }
+    },
+
+    // ruleDiffTotal returns how many rules differ across all three groups.
+    // Used by the "Review N changes" header so the user sees the total at
+    // a glance before expanding.
+    ruleDiffTotal() {
+      if (!this.ruleDiff) return 0;
+      return (this.ruleDiff.added || []).length
+        + (this.ruleDiff.modified || []).length
+        + (this.ruleDiff.removed || []).length;
+    },
+
+    ruleDiffKey(change, path) {
+      return change + ':' + path;
+    },
+
+    toggleRuleDiffRow(change, path) {
+      const k = this.ruleDiffKey(change, path);
+      this.ruleDiffExpanded[k] = !this.ruleDiffExpanded[k];
+    },
+
+    setRuleDiffView(change, path, mode) {
+      this.ruleDiffViewMode[this.ruleDiffKey(change, path)] = mode;
+    },
+
+    ruleDiffViewModeFor(change, path) {
+      return this.ruleDiffViewMode[this.ruleDiffKey(change, path)] || '';
+    },
+
+    // formatDiffValue renders a single field-diff before/after value as a
+    // compact string. Objects and arrays collapse to JSON so the field
+    // list stays one line per change. Missing values render as "(none)"
+    // so an added-from-nothing or removed-to-nothing change reads as
+    // "(none) → <new value>" rather than an opaque blank space.
+    formatDiffValue(v) {
+      if (v === null || v === undefined) return '(none)';
+      if (typeof v === 'string') return v;
+      if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+      try {
+        return JSON.stringify(v);
+      } catch (_) {
+        return String(v);
+      }
+    },
+
+    // prettyJSON renders an object or array as 2-space indented JSON for
+    // the raw before/after view and the Added/Removed expand body.
+    prettyJSON(v) {
+      if (v === null || v === undefined) return '';
+      if (typeof v === 'string') {
+        try {
+          return JSON.stringify(JSON.parse(v), null, 2);
+        } catch (_) {
+          return v;
+        }
+      }
+      try {
+        return JSON.stringify(v, null, 2);
+      } catch (_) {
+        return String(v);
+      }
+    },
+
+    // --- Push-token validation ---
+    async validateStoredPushToken() {
+      this.pushTokenValidating = true;
+      this.pushTokenValidated = '';
+      this.pushTokenValidateError = '';
+      try {
+        const r = await this.apiFetch('/api/config/push-token/validate', { method: 'POST' });
+        this.pushTokenValidated = r.login || 'ok';
+      } catch (e) {
+        this.pushTokenValidateError = e.message;
+      } finally {
+        this.pushTokenValidating = false;
       }
     },
 

@@ -414,12 +414,36 @@ func prepareAuth(remoteURL string, auth GitAuth) (effectiveURL string, env []str
 func runGit(ctx context.Context, dir string, extraEnv []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), extraEnv...)
+	// GIT_TERMINAL_PROMPT=0 makes git fail fast when credentials are needed
+	// instead of trying to read interactively from a TTY that does not exist
+	// in the container — the cryptic "could not read Username ... No such
+	// device or address" error becomes the clean "terminal prompts disabled".
+	base := append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GIT_ASKPASS=/bin/true")
+	cmd.Env = append(base, extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("git %s: %w — %s", args[0], err, strings.TrimSpace(string(out)))
+		msg := scrubTokens(strings.TrimSpace(string(out)))
+		return "", fmt.Errorf("git %s: %w — %s", args[0], err, msg)
 	}
 	return string(out), nil
+}
+
+// scrubTokens removes any PAT embedded as https://x-access-token:TOKEN@host/...
+// from error output so tokens do not leak into logs or UI toasts. Anything
+// matching "x-access-token:<secret>@" gets replaced with "x-access-token:***@".
+func scrubTokens(s string) string {
+	const marker = "x-access-token:"
+	for {
+		i := strings.Index(s, marker)
+		if i < 0 {
+			return s
+		}
+		j := strings.IndexAny(s[i+len(marker):], "@ \t\n")
+		if j < 0 {
+			return s[:i+len(marker)] + "***"
+		}
+		s = s[:i+len(marker)] + "***" + s[i+len(marker)+j:]
+	}
 }
 
 // sanitizeGitOutput strips the token from error messages when token auth

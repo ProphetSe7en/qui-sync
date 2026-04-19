@@ -323,14 +323,170 @@
                 Add push token in Settings to enable
               </span>
             </div>
-            <template x-if="repoStatus.diff_summary">
-              <pre style="width:100%; margin-top:12px; background:var(--bg-base); padding:10px;
-                          border-radius:var(--radius); font-family:var(--font-mono);
-                          font-size:var(--font-xs); color:var(--text-secondary);
-                          white-space:pre-wrap; max-height:200px; overflow:auto"
-                   x-text="repoStatus.diff_summary"></pre>
-            </template>
             </div>
+
+            <!-- Rule-level diff — the pre-push review that replaces the
+                 old git diff --stat summary. Every rule whose working-tree
+                 version differs from origin appears here, grouped by
+                 change type. Added / Removed rows expand to the full
+                 rule JSON; Modified rows expand to a field-by-field
+                 before → after list. -->
+            <div class="rule-diff-panel" style="width:100%; margin-top:16px">
+              <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px">
+                <div style="font-weight:600; font-size:var(--font-sm)">Review changes before push</div>
+                <div class="dim" style="font-size:var(--font-xs)"
+                     x-show="ruleDiff && !ruleDiffError"
+                     x-text="'(' + ruleDiffTotal() + ' ' + (ruleDiffTotal() === 1 ? 'rule differs' : 'rules differ') + ')'"></div>
+                <div style="flex:1"></div>
+                <button class="btn btn-sm" @click="loadRuleDiff()" :disabled="ruleDiffLoading">
+                  <span x-show="!ruleDiffLoading">Refresh diff</span>
+                  <span x-show="ruleDiffLoading">…</span>
+                </button>
+              </div>
+
+              <template x-if="ruleDiffError">
+                <div class="dim" style="font-size:var(--font-xs); color:var(--text-err)"
+                     x-text="'Diff failed: ' + ruleDiffError"></div>
+              </template>
+
+              <template x-if="ruleDiff && ruleDiff.no_repo">
+                <div class="dim" style="font-size:var(--font-xs)">
+                  Nothing to diff yet — the share-repo has not been exported. Run an Export from the Instances panel first.
+                </div>
+              </template>
+
+              <template x-if="ruleDiff && ruleDiff.no_remote && !ruleDiff.no_repo">
+                <div class="dim" style="font-size:var(--font-xs); margin-bottom:8px">
+                  No remote branch to compare against yet — showing every local rule as <b>added</b>. After the first successful push this view will switch to the normal local-vs-remote diff.
+                </div>
+              </template>
+
+              <template x-if="ruleDiff && !ruleDiff.no_repo && ruleDiffTotal() === 0 && !ruleDiffError">
+                <div class="dim" style="font-size:var(--font-xs)">
+                  Working tree is identical to remote — nothing to push.
+                </div>
+              </template>
+
+              <!-- One section per change type. Each row is a single rule.
+                   Clicking the row header toggles expand so the user can
+                   drill into the actual differences before committing. -->
+              <template x-for="group in ['added','modified','removed']" :key="group">
+                <div x-show="ruleDiff && (ruleDiff[group] || []).length > 0" style="margin-top:10px">
+                  <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px; font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.06em; color:var(--text-secondary)">
+                    <span x-text="group === 'added' ? '+ Added' : group === 'modified' ? '~ Modified' : '− Removed'"></span>
+                    <span x-text="'(' + (ruleDiff[group] || []).length + ')'"></span>
+                  </div>
+                  <template x-for="rule in (ruleDiff[group] || [])" :key="rule.path">
+                    <div class="rule-diff-row" style="border:1px solid var(--border-subtle); border-radius:var(--radius); margin-bottom:6px; background:var(--bg-base)">
+                      <!-- Row header — always visible, click to expand. -->
+                      <div style="display:flex; align-items:center; gap:10px; padding:8px 12px; cursor:pointer"
+                           @click="toggleRuleDiffRow(rule.change, rule.path)">
+                        <span style="width:16px; display:inline-block; color:var(--text-secondary)"
+                              x-text="ruleDiffExpanded[ruleDiffKey(rule.change, rule.path)] ? '▾' : '▸'"></span>
+                        <span style="flex:1; font-size:var(--font-sm); font-weight:500" x-text="rule.name"></span>
+                        <span class="dim" style="font-size:var(--font-xs)" x-text="rule.category + ' / ' + rule.slug"></span>
+                        <span x-show="rule.change === 'modified' && rule.fields && rule.fields.length"
+                              class="dim" style="font-size:var(--font-xs)"
+                              x-text="rule.fields.length + ' field' + (rule.fields.length === 1 ? '' : 's')"></span>
+                      </div>
+
+                      <!-- Expanded body — content depends on change type. -->
+                      <div x-show="ruleDiffExpanded[ruleDiffKey(rule.change, rule.path)]"
+                           style="padding:0 12px 12px 32px; border-top:1px solid var(--border-subtle)">
+
+                        <!-- Modified: structured field list -->
+                        <template x-if="rule.change === 'modified' && ruleDiffViewModeFor(rule.change, rule.path) === ''">
+                          <div style="padding-top:8px">
+                            <template x-for="(f, fi) in (rule.fields || [])" :key="fi">
+                              <div style="font-family:var(--font-mono); font-size:var(--font-xs); padding:3px 0; line-height:1.5">
+                                <span style="color:var(--text-primary)" x-text="f.path"></span>
+                                <template x-if="f.kind === 'scalar'">
+                                  <span>:
+                                    <span class="diff-remove" x-text="formatDiffValue(f.before)"></span>
+                                    →
+                                    <span class="diff-add" x-text="formatDiffValue(f.after)"></span>
+                                  </span>
+                                </template>
+                                <template x-if="f.kind === 'array_added'">
+                                  <span>
+                                    <span class="dim">(added):</span>
+                                    <span class="diff-add" x-text="formatDiffValue(f.after)"></span>
+                                  </span>
+                                </template>
+                                <template x-if="f.kind === 'array_removed'">
+                                  <span>
+                                    <span class="dim">(removed):</span>
+                                    <span class="diff-remove" x-text="formatDiffValue(f.before)"></span>
+                                  </span>
+                                </template>
+                                <template x-if="f.kind === 'object' || f.kind === 'array'">
+                                  <span>:
+                                    <span class="dim" x-text="'(' + f.kind + ' changed)'"></span>
+                                  </span>
+                                </template>
+                              </div>
+                            </template>
+                            <div style="margin-top:8px">
+                              <button class="btn btn-sm" @click.stop="setRuleDiffView(rule.change, rule.path, 'json')">Show full JSON</button>
+                            </div>
+                          </div>
+                        </template>
+
+                        <!-- Modified (JSON view) — side-by-side before / after. -->
+                        <template x-if="rule.change === 'modified' && ruleDiffViewModeFor(rule.change, rule.path) === 'json'">
+                          <div style="padding-top:8px">
+                            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px">
+                              <div>
+                                <div class="dim" style="font-size:var(--font-xs); margin-bottom:4px">Remote (before)</div>
+                                <pre style="background:var(--bg-surface); padding:8px; border-radius:var(--radius);
+                                            font-family:var(--font-mono); font-size:var(--font-xs);
+                                            max-height:300px; overflow:auto; white-space:pre-wrap"
+                                     x-text="prettyJSON(rule.before_json)"></pre>
+                              </div>
+                              <div>
+                                <div class="dim" style="font-size:var(--font-xs); margin-bottom:4px">Local (after)</div>
+                                <pre style="background:var(--bg-surface); padding:8px; border-radius:var(--radius);
+                                            font-family:var(--font-mono); font-size:var(--font-xs);
+                                            max-height:300px; overflow:auto; white-space:pre-wrap"
+                                     x-text="prettyJSON(rule.after_json)"></pre>
+                              </div>
+                            </div>
+                            <div style="margin-top:8px">
+                              <button class="btn btn-sm" @click.stop="setRuleDiffView(rule.change, rule.path, '')">Back to field list</button>
+                            </div>
+                          </div>
+                        </template>
+
+                        <!-- Added: full local rule that will be pushed to remote. -->
+                        <template x-if="rule.change === 'added'">
+                          <div style="padding-top:8px">
+                            <div class="dim" style="font-size:var(--font-xs); margin-bottom:4px">This rule exists locally and will be pushed to the remote.</div>
+                            <pre style="background:var(--bg-surface); padding:8px; border-radius:var(--radius);
+                                        font-family:var(--font-mono); font-size:var(--font-xs);
+                                        max-height:300px; overflow:auto; white-space:pre-wrap"
+                                 x-text="prettyJSON(rule.after_json)"></pre>
+                          </div>
+                        </template>
+
+                        <!-- Removed: full remote rule that will be deleted from remote after push. -->
+                        <template x-if="rule.change === 'removed'">
+                          <div style="padding-top:8px">
+                            <div class="dim" style="font-size:var(--font-xs); margin-bottom:4px; color:var(--text-err)">
+                              This rule exists on the remote but not locally — pushing will delete it.
+                            </div>
+                            <pre style="background:var(--bg-surface); padding:8px; border-radius:var(--radius);
+                                        font-family:var(--font-mono); font-size:var(--font-xs);
+                                        max-height:300px; overflow:auto; white-space:pre-wrap"
+                                 x-text="prettyJSON(rule.before_json)"></pre>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+              </template>
+            </div>
+
           </div>
         </template>
         <template x-if="!repoStatus && !loadingRepoStatus">
@@ -589,10 +745,19 @@
             </div>
           </div>
         </div>
-        <div style="margin-top:12px; display:flex; gap:8px; align-items:center">
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
           <button class="btn btn-primary" @click="saveGitConfig()">Save</button>
+          <button class="btn" @click="validateStoredPushToken()" :disabled="pushTokenValidating"
+                  title="Re-test the currently stored push token against GitHub. Catches revoked / expired tokens without a push attempt.">
+            <span x-show="!pushTokenValidating">Validate stored token</span>
+            <span x-show="pushTokenValidating">Validating…</span>
+          </button>
           <span x-show="gitRemoteStatus === 'ok'" style="color:var(--accent-green); font-size:var(--font-sm)">● Configured</span>
           <span x-show="gitRemoteStatus === 'none'" class="dim" style="font-size:var(--font-sm)">Not configured yet</span>
+          <span x-show="pushTokenValidated" style="color:var(--accent-green); font-size:var(--font-sm)"
+                x-text="'● Valid — ' + pushTokenValidated"></span>
+          <span x-show="pushTokenValidateError" style="color:var(--text-err); font-size:var(--font-sm)"
+                x-text="'● ' + pushTokenValidateError"></span>
         </div>
       </div>
     </div>

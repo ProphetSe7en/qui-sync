@@ -793,6 +793,22 @@ func (s *Server) handleChangelog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---- repo rule-level diff ----
+
+// handleRepoRuleDiff returns a structured rule-by-rule comparison of the
+// working tree vs origin/<current-branch>. Used by the Export tab's pre-push
+// review so the user can see exactly which automation rules differ — and
+// in what way — before running commit + push.
+func (s *Server) handleRepoRuleDiff(w http.ResponseWriter, r *http.Request) {
+	cfg := s.getConfig()
+	result, err := core.ComputeRepoRuleDiff(r.Context(), cfg.Paths().Repo)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, result)
+}
+
 // ---- repo status + push ----
 
 func (s *Server) handleRepoStatus(w http.ResponseWriter, r *http.Request) {
@@ -805,16 +821,13 @@ func (s *Server) handleRepoStatus(w http.ResponseWriter, r *http.Request) {
 	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
 	_, tokenErr := os.Stat(tokenPath)
 
-	// Get diff summary so user sees what would be pushed
-	diffSummary := ""
-	if status.Ahead > 0 {
-		diffSummary, _ = core.RepoDiffSummary(r.Context(), cfg.Paths().Repo)
-	}
-
+	// Note: the old diff_summary field (a git diff --stat text block) was
+	// removed when the structured rule-level diff from /api/repo/rule-diff
+	// replaced it in the UI. If any future caller needs the short-form
+	// summary it's still reachable via core.RepoDiffSummary directly.
 	writeJSON(w, 200, map[string]any{
 		"status":          status,
 		"push_configured": tokenErr == nil,
-		"diff_summary":    diffSummary,
 	})
 }
 
