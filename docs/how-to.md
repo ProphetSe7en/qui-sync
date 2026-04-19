@@ -103,7 +103,7 @@ When you export a rule, qui-sync transforms it for sharing:
    - `R Renamed` — rules whose name changed in Qui
    - `- Removed` — rules deleted from Qui
 7. Click **Commit export** to write the changes:
-   - Files are written to `/data/repo/rules/<folder>/`
+   - Files are written to `/data/repo/<folder>/<Rule Name>.json` — the same layout used by community-maintained qui automation repos, so your repo is compatible with anyone else using qui-sync
    - A git commit is made automatically
    - Old versions are backed up to `/data/backups/`
    - CHANGELOG.md is updated
@@ -113,9 +113,23 @@ When you export a rule, qui-sync transforms it for sharing:
 After committing, the **Share-repo** panel shows your repo's sync status:
 
 - **"In sync with remote"** — nothing to push
-- **"2 commits ahead"** — you have changes ready to push, with a file diff showing exactly what
+- **"2 commits ahead"** — you have changes ready to push
 
-Click **Push to remote** to send your changes to GitHub. Requires a push token configured in Settings.
+Below the status you'll find **Review changes before push**. This lists every rule that differs from the remote, grouped as:
+
+- **Added** — new rules you are about to publish
+- **Modified** — existing rules whose settings changed. Click a row to see exactly which fields differ (`sortOrder: 3 → 5`, `tags (added): [cross-seed]`).
+- **Removed** — rules that exist on the remote but not locally. Pushing deletes them from the remote.
+
+Click **Push to remote** when the list matches what you intend. Requires a push token configured in Settings.
+
+### Verifying your GitHub token
+
+In Settings, after pasting and saving your PAT, click **Validate stored token**. qui-sync asks GitHub who the token belongs to and shows the result inline:
+
+- **"● Valid — \<your-username\>"** — token works, push will succeed
+- **"● GitHub rejected the token (401)"** — token is wrong, expired, or mistyped. Regenerate and paste again.
+- **"● GitHub denied the request (403)"** — token is real but does not have write access to the target repo. Check that the fine-grained PAT has Contents: Read and Write scoped to the correct repository.
 
 ### Pulling from GitHub (accepting PRs)
 
@@ -223,8 +237,8 @@ Currently, qui-sync keeps versioned backups of changed rules in `/data/backups/`
 
 ### "I changed a regex in 20 rules and want to share the fix"
 
-1. Edit the JSON files directly in `/data/repo/rules/` (use VSCode, find-and-replace).
-2. Go to Export tab → Share-repo → Push to remote.
+1. Edit the JSON files directly in `/data/repo/<folder>/` (use VSCode, find-and-replace).
+2. Go to Export tab → Share-repo → Review changes → Push to remote.
 3. Others who subscribe will see the changes on their next Pull → Plan → Apply.
 
 ### "Someone sent me a PR fixing a bug in my shared rules"
@@ -252,7 +266,7 @@ Currently, qui-sync keeps versioned backups of changed rules in `/data/backups/`
 
 ### "I messed up and want to revert a rule"
 
-Old versions of every changed rule are kept in `/data/backups/` with date suffixes (e.g. `tag-tier1-2026-04-18.json`). You can manually copy a backup file back to `/data/repo/rules/<folder>/` and then Apply to Qui.
+Old versions of every changed rule are kept in `/data/backups/` with date suffixes (e.g. `Tag Tier 1-2026-04-18.json`). You can manually copy a backup file back to `/data/repo/<folder>/` and then Apply to Qui.
 
 ### "Auto-sync updated a rule I didn't want changed"
 

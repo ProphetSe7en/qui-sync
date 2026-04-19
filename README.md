@@ -12,6 +12,8 @@ A web UI for managing [Qui](https://github.com/autobrr/qui) automation rules as 
 - **Sync** — Subscribe to someone else's repo and import their rules into your Qui. Your trackers, enabled state, and intervals are preserved on every update.
 - **Auto-sync** — Keep rules in sync automatically. Per-rule opt-in — you choose what auto-updates and what stays manual.
 
+Files are organised as `<folder>/<Rule Name>.json` — the same convention used by community-maintained qui automation repos, so qui-sync can read and write them interchangeably.
+
 ## Quick start
 
 1. Install the container ([Unraid](#unraid) or [Docker](#docker))
