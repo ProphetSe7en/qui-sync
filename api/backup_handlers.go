@@ -14,12 +14,17 @@ import (
 	"github.com/prophetse7en/qui-sync/core"
 )
 
-// Backups are stored at /data/backups-full/<instance-id>/<timestamp>/
+// Backups are stored at <data-volume>/backups-full/<instance-id>/<timestamp>/
 // Each backup is a directory of JSON files — one per rule, full 1:1 copy
 // from Qui with ALL fields (trackers, enabled, intervals, everything).
+//
+// Path routing goes through cfg.Paths().FullBackups so the same
+// parent-directory fallback the rest of the codebase uses also applies
+// here — if RepoDir is set to a volume root like /data, backups land
+// inside /data/backups-full rather than at /backups-full (root fs).
 
 func backupsFullDir(cfg *core.Config) string {
-	return filepath.Join(filepath.Dir(cfg.Paths().Repo), "backups-full")
+	return cfg.Paths().FullBackups
 }
 
 func instanceBackupDir(cfg *core.Config, instanceID int) string {

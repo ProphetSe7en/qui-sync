@@ -123,26 +123,29 @@ func defaultConfig(path string) *Config {
 // DataPaths computes the canonical subdirectory layout under the data volume.
 // RepoDir is the git share-repo (push this). Everything else is local-only.
 type DataPaths struct {
-	Repo    string // /data/repo — the git share-repo
-	State   string // /data/state — maintainer + consumer state
-	Backups string // /data/backups — archived rule versions
-	Sources string // /data/sources — sync subscription clones
+	Repo        string // /data/repo — the git share-repo
+	State       string // /data/state — maintainer + consumer state
+	Backups     string // /data/backups — archived rule versions (per-rule on export)
+	FullBackups string // /data/backups-full — full instance backups (Backup tab)
+	Sources     string // /data/sources — sync subscription clones
 }
 
-// Paths derives the four canonical subdirectories from RepoDir.
+// Paths derives the canonical subdirectories from RepoDir.
 // If RepoDir is /data/repo, sibling dirs are /data/state, etc.
-// If RepoDir is a volume root like /data (old config, no /repo subdir),
-// subdirs go inside it instead of alongside — prevents writing to /.
+// If RepoDir is a volume root like /data (compact config, no /repo
+// subdir), subdirs go INSIDE RepoDir instead of alongside — prevents
+// writing to filesystem root "/" which is read-only for nobody:users.
 func (c *Config) Paths() DataPaths {
 	parent := filepath.Dir(c.RepoDir)
 	if parent == "/" || parent == "." {
 		parent = c.RepoDir
 	}
 	return DataPaths{
-		Repo:    c.RepoDir,
-		State:   filepath.Join(parent, "state"),
-		Backups: filepath.Join(parent, "backups"),
-		Sources: filepath.Join(parent, "sources"),
+		Repo:        c.RepoDir,
+		State:       filepath.Join(parent, "state"),
+		Backups:     filepath.Join(parent, "backups"),
+		FullBackups: filepath.Join(parent, "backups-full"),
+		Sources:     filepath.Join(parent, "sources"),
 	}
 }
 
