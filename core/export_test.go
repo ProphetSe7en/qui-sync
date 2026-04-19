@@ -45,17 +45,19 @@ func TestBuildRuleFileFieldOrder(t *testing.T) {
 		got = append(got, m[1])
 	}
 
-	// Expected order matches the community convention and Qui's natural
-	// response shape — identity first, trackers, then conditions, then
-	// interval. qui-sync's own metadata (_slug) prefixes everything.
+	// Expected order: qui-sync metadata (_slug) prefix, then Qui's exact
+	// native export order (name → trackerPattern → trackerDomains →
+	// conditions → intervalSeconds), then qui-sync-managed sortOrder
+	// as a suffix. Keeps Qui's slice of the file byte-compatible with
+	// the format Qui's own export endpoint produces.
 	want := []string{
 		"_slug",
 		"name",
-		"sortOrder",
 		"trackerPattern",
 		"trackerDomains",
 		"conditions",
 		"intervalSeconds",
+		"sortOrder",
 	}
 
 	if strings.Join(got, ",") != strings.Join(want, ",") {

@@ -276,24 +276,38 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 
 // ruleFileOut is the on-disk shape of an exported rule. Fields are laid
 // out in a struct (not a map) so Go's JSON encoder emits them in the
-// order declared here — matching the natural reading order Qui itself
-// uses for its API responses. "conditions" stays as json.RawMessage so
-// Qui's internal ordering inside that block (schemaVersion, the rule
-// type, action sub-blocks) survives the round-trip verbatim.
+// order declared here.
 //
-// Field order matches the community convention observed in TRaSH /
-// BZ / qui_workflows repos: identity first, then trackers, then the
-// rule logic, then interval. The qui-sync metadata (_slug,
-// _description) prefixes everything.
+// Layout choice: Qui's own export endpoint produces
+//
+//	name, trackerPattern, trackerDomains, conditions, intervalSeconds
+//
+// (no sortOrder in that payload). We preserve that exact sequence for
+// the Qui-native fields, then bookend with qui-sync metadata:
+//
+//	_slug, _description                                  ← qui-sync prefix
+//	name, trackerPattern, trackerDomains,
+//	conditions, intervalSeconds                          ← Qui's order, verbatim
+//	sortOrder                                            ← qui-sync suffix
+//
+// sortOrder lands at the end because it is a qui-sync-managed value
+// (either Qui's own value or a maintainer override from state.json) —
+// keeping it after intervalSeconds means Qui's slice of the file is
+// byte-identical to its native export format.
+//
+// "conditions" stays as json.RawMessage so Qui's internal ordering
+// inside that block (schemaVersion first, action sub-blocks with
+// enabled/mode before the condition predicate, operator before the
+// conditions array) survives the round-trip verbatim.
 type ruleFileOut struct {
 	Slug            string          `json:"_slug,omitempty"`
 	Description     string          `json:"_description,omitempty"`
 	Name            string          `json:"name"`
-	SortOrder       int             `json:"sortOrder"`
 	TrackerPattern  string          `json:"trackerPattern"`
 	TrackerDomains  []string        `json:"trackerDomains"`
 	Conditions      json.RawMessage `json:"conditions,omitempty"`
 	IntervalSeconds int             `json:"intervalSeconds,omitempty"`
+	SortOrder       int             `json:"sortOrder"`
 }
 
 // buildRuleFile converts a Qui Automation into the upstream file
@@ -342,11 +356,11 @@ func buildRuleFile(r Automation, slug string, cfg *Config, sortOrder int) ([]byt
 		Slug:            slug,
 		Description:     src.Description,
 		Name:            src.Name,
-		SortOrder:       sortOrder,
 		TrackerPattern:  src.TrackerPattern,
 		TrackerDomains:  src.TrackerDomains,
 		Conditions:      src.Conditions,
 		IntervalSeconds: src.IntervalSeconds,
+		SortOrder:       sortOrder,
 	}
 
 	// cfg.ReverseMappings is accepted but unused in v0.1 — see TODO above.
