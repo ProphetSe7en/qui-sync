@@ -274,59 +274,84 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 	return diff, nil
 }
 
-// buildRuleFile converts a Qui Automation into the upstream file representation:
-// - strips user-specific fields (trackerPattern, intervalSeconds, ...)
-// - injects _slug and optional _description
-// - applies reverse mappings (v0.1: placeholder; full impl in v0.2)
+// ruleFileOut is the on-disk shape of an exported rule. Fields are laid
+// out in a struct (not a map) so Go's JSON encoder emits them in the
+// order declared here — matching the natural reading order Qui itself
+// uses for its API responses. "conditions" stays as json.RawMessage so
+// Qui's internal ordering inside that block (schemaVersion, the rule
+// type, action sub-blocks) survives the round-trip verbatim.
+//
+// Field order matches the community convention observed in TRaSH /
+// BZ / qui_workflows repos: identity first, then trackers, then the
+// rule logic, then interval. The qui-sync metadata (_slug,
+// _description) prefixes everything.
+type ruleFileOut struct {
+	Slug            string          `json:"_slug,omitempty"`
+	Description     string          `json:"_description,omitempty"`
+	Name            string          `json:"name"`
+	SortOrder       int             `json:"sortOrder"`
+	TrackerPattern  string          `json:"trackerPattern"`
+	TrackerDomains  []string        `json:"trackerDomains"`
+	Conditions      json.RawMessage `json:"conditions,omitempty"`
+	IntervalSeconds int             `json:"intervalSeconds,omitempty"`
+}
+
+// buildRuleFile converts a Qui Automation into the upstream file
+// representation. Fields are emitted in the community-convention
+// reading order (identity → trackers → conditions → interval); the
+// conditions block is passed through byte-for-byte from Qui so the
+// semantic ordering Qui uses inside it (schemaVersion first, action
+// enabled/mode before the condition predicate, etc.) is preserved.
+//
+// Strips identity + user-owned fields (id, enabled, dryRun, ...) from
+// the input before emission. Replaces personal tracker values with
+// placeholders so trackers are never published. Wildcard patterns ("*")
+// are preserved as-is since they are not personal data.
+//
+// TODO(v0.2): apply cfg.ReverseMappings to tags/categories/paths inside
+// conditions. Not implemented yet — conditions pass through untouched.
 func buildRuleFile(r Automation, slug string, cfg *Config, sortOrder int) ([]byte, error) {
-	var obj map[string]any
-	if err := json.Unmarshal(r.Raw, &obj); err != nil {
+	// Decode only the fields we ship to disk. Stripped fields (id,
+	// enabled, notify, ...) are never read — they cannot leak even if
+	// Qui starts returning new fields we are not aware of.
+	var src struct {
+		Name            string          `json:"name"`
+		TrackerPattern  string          `json:"trackerPattern"`
+		TrackerDomains  []string        `json:"trackerDomains"`
+		Conditions      json.RawMessage `json:"conditions"`
+		IntervalSeconds int             `json:"intervalSeconds"`
+		Description     string          `json:"_description"`
+	}
+	if err := json.Unmarshal(r.Raw, &src); err != nil {
 		return nil, err
 	}
 
-	stripFields := cfg.StripFields
-	if len(stripFields) == 0 {
-		stripFields = DefaultStripFields()
-	}
-	for _, f := range stripFields {
-		delete(obj, f)
-	}
-
-	// Always set the effective sortOrder (user override or Qui's value).
-	obj["sortOrder"] = sortOrder
-
 	// Replace real tracker values with placeholders for sharing.
 	// Trackers with "*" (all) are kept as-is — they're not personal.
-	if tp, ok := obj["trackerPattern"].(string); ok && tp != "" && tp != "*" {
-		obj["trackerPattern"] = "tracker_1"
+	if src.TrackerPattern != "" && src.TrackerPattern != "*" {
+		src.TrackerPattern = "tracker_1"
 	}
-	if td, ok := obj["trackerDomains"].([]any); ok && len(td) > 0 {
-		isWildcard := len(td) == 1 && td[0] == "*"
+	if len(src.TrackerDomains) > 0 {
+		isWildcard := len(src.TrackerDomains) == 1 && src.TrackerDomains[0] == "*"
 		if !isWildcard {
-			obj["trackerDomains"] = []string{"tracker.xyz"}
+			src.TrackerDomains = []string{"tracker.xyz"}
 		}
 	}
 
-	// Build an ordered output with stable key ordering.
-	out := map[string]any{
-		"_slug": slug,
-	}
-	if desc, _ := obj["_description"].(string); desc != "" {
-		out["_description"] = desc
-	}
-	// Copy remaining keys.
-	for k, v := range obj {
-		if k == "_slug" {
-			continue
-		}
-		out[k] = v
+	out := ruleFileOut{
+		Slug:            slug,
+		Description:     src.Description,
+		Name:            src.Name,
+		SortOrder:       sortOrder,
+		TrackerPattern:  src.TrackerPattern,
+		TrackerDomains:  src.TrackerDomains,
+		Conditions:      src.Conditions,
+		IntervalSeconds: src.IntervalSeconds,
 	}
 
-	// TODO(v0.2): apply cfg.ReverseMappings to tags/categories/paths inside conditions.
+	// cfg.ReverseMappings is accepted but unused in v0.1 — see TODO above.
 	_ = cfg.ReverseMappings
 
-	// Marshal with stable ordering. Go's encoding/json sorts map keys, which
-	// gives us deterministic output.
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetIndent("", "  ")
@@ -334,7 +359,6 @@ func buildRuleFile(r Automation, slug string, cfg *Config, sortOrder int) ([]byt
 	if err := enc.Encode(out); err != nil {
 		return nil, err
 	}
-	// Trim trailing newline added by Encode for consistency.
 	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
