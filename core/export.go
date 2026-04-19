@@ -244,11 +244,23 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool)
 			if !dryRun {
 				path := filepath.Join(paths.Repo, entry.Category, RuleFilename(entry.LastName)+".json")
 				if _, err := os.Stat(path); err == nil {
+					// Local timestamped backup in /data/backups — not
+					// pushed to GitHub, safety net against UI mistakes.
 					if err := backupFile(path, paths.Backups); err != nil {
 						return nil, err
 					}
-					if err := os.Remove(path); err != nil {
-						return nil, fmt.Errorf("remove %s: %w", path, err)
+					// Archive to /data/repo/archive/<category>/<name>.json —
+					// kept under version control so the rule's history
+					// stays visible on GitHub. Plain filename (not
+					// timestamped) — if the same rule is later archived
+					// again, the newer version overwrites and git's own
+					// history preserves the earlier one.
+					archivePath := filepath.Join(paths.Repo, "archive", entry.Category, RuleFilename(entry.LastName)+".json")
+					if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+						return nil, fmt.Errorf("mkdir archive dir: %w", err)
+					}
+					if err := os.Rename(path, archivePath); err != nil {
+						return nil, fmt.Errorf("archive %s: %w", path, err)
 					}
 				}
 				state.Forget(inst.QuiInstanceID, quiID)

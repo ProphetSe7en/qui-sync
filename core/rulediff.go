@@ -222,6 +222,12 @@ func walkLocalRules(repoDir string) ([]localRuleFile, error) {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
+		// archive/ holds retired rules — they are version-controlled
+		// for history but not part of the active rule set, so the diff
+		// walker excludes them.
+		if entry.Name() == "archive" {
+			continue
+		}
 		catDir := filepath.Join(repoDir, entry.Name())
 		files, err := os.ReadDir(catDir)
 		if err != nil {
@@ -261,7 +267,8 @@ func slugFromPath(relPath string) string {
 
 // isRulePath returns true when p points at a potential rule file under
 // the share-repo convention — "<category>/<filename>.json" with exactly
-// two path segments and a non-empty filename.
+// two path segments and a non-empty filename. Files under archive/ are
+// excluded (retired rules, not part of the active diff).
 func isRulePath(p string) bool {
 	if filepath.Ext(p) != ".json" {
 		return false
@@ -271,6 +278,9 @@ func isRulePath(p string) bool {
 		return false
 	}
 	if strings.HasPrefix(parts[0], ".") {
+		return false
+	}
+	if parts[0] == "archive" {
 		return false
 	}
 	return true

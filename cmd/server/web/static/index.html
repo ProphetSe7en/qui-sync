@@ -265,7 +265,7 @@
               </ul>
             </div>
             <div x-show="diff.removed.length">
-              <div class="diff-remove" style="font-weight:600">- <span x-text="diff.removed.length"></span> removed</div>
+              <div class="diff-remove" style="font-weight:600">⌫ <span x-text="diff.removed.length"></span> archived (moved to <code>archive/</code>)</div>
               <ul>
                 <template x-for="e in diff.removed" :key="e.QuiID">
                   <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>

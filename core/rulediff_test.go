@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -106,14 +107,15 @@ func mustWrite(t *testing.T, path, content string) {
 }
 
 // TestWalkLocalRulesFilters confirms the walker picks up rule files,
-// ignores non-rule JSON, and skips hidden directories.
+// ignores non-rule JSON, and skips hidden directories and archive/.
 func TestWalkLocalRulesFilters(t *testing.T) {
 	dir := t.TempDir()
 	mustWrite(t, dir+"/movies/Tag Tier 1.json", `{"name":"Tag: Tier 1"}`)
 	mustWrite(t, dir+"/series/Tag Tier 2.json", `{"name":"Tag: Tier 2"}`)
-	mustWrite(t, dir+"/scripts/helper.json", `{"just": "data"}`)  // not a rule
+	mustWrite(t, dir+"/scripts/helper.json", `{"just": "data"}`) // not a rule
 	mustWrite(t, dir+"/docs/readme.md", `# docs`)                // not json
 	mustWrite(t, dir+"/.github/workflows/ci.yml", `name: ci`)    // hidden dir
+	mustWrite(t, dir+"/archive/movies/Old Rule.json", `{"name":"Old Rule"}`) // retired, should be skipped
 
 	rules, err := walkLocalRules(dir)
 	if err != nil {
@@ -131,6 +133,27 @@ func TestWalkLocalRulesFilters(t *testing.T) {
 	}
 	if !seen["series/Tag Tier 2.json"] {
 		t.Error("missing series/Tag Tier 2.json")
+	}
+	for path := range seen {
+		if strings.HasPrefix(path, "archive/") {
+			t.Errorf("archive files must not appear in the walker: %s", path)
+		}
+	}
+}
+
+// TestIsRulePathRejectsArchive confirms that paths under archive/ are
+// not classified as active rule files — so the rule-diff never reports
+// retired rules as present in the working tree or remote.
+func TestIsRulePathRejectsArchive(t *testing.T) {
+	cases := map[string]bool{
+		"movies/Tag Tier 1.json":         true,
+		"archive/movies/Old.json":        false, // retired
+		"archive/series/Something.json":  false,
+	}
+	for path, want := range cases {
+		if got := isRulePath(path); got != want {
+			t.Errorf("isRulePath(%q) = %v, want %v", path, got, want)
+		}
 	}
 }
 

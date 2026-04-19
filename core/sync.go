@@ -194,6 +194,11 @@ func listRepoRules(cloneDir string) ([]repoRule, error) {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
+		// archive/ holds rules the maintainer has retired — not current
+		// rules. Consumers never apply them to their Qui.
+		if entry.Name() == "archive" {
+			continue
+		}
 		cat := entry.Name()
 		catDir := filepath.Join(cloneDir, cat)
 		files, err := os.ReadDir(catDir)

@@ -86,9 +86,9 @@ func renderSection(date string, diff *ExportDiff, manualNotes string) string {
 		sb.WriteString("\n")
 	}
 	if len(diff.Removed) > 0 {
-		sb.WriteString("### Removed\n")
+		sb.WriteString("### Archived\n")
 		for _, e := range diff.Removed {
-			fmt.Fprintf(&sb, "- `%s` (%s) — %s (archived to `backup/`)\n", e.Slug, e.Category, e.Name)
+			fmt.Fprintf(&sb, "- `%s` (%s) — %s (moved to `archive/%s/`)\n", e.Slug, e.Category, e.Name, e.Category)
 		}
 		sb.WriteString("\n")
 	}
