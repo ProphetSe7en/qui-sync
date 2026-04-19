@@ -305,7 +305,7 @@
             <div style="display:flex; gap:8px; align-items:center">
               <button class="btn" @click="pullRepo()"
                       :disabled="!repoStatus.push_configured || repoStatus.status.behind === 0 || pullingRepo"
-                      title="Pull latest changes from remote (e.g. merged PRs)">
+                      title="Fetch new commits from remote and merge them into local. Safe — keeps your local commits intact. Use for day-to-day sync (e.g. after merging a PR). Fails if local and remote have diverged — use 'Reset local to remote' for that case.">
                 Pull from remote
               </button>
               <button class="btn btn-primary" @click="pushRepo()"
@@ -321,7 +321,7 @@
               <button class="btn" @click="resetLocalToRemote()"
                       :disabled="!repoStatus.status.remote_url || resettingRepo"
                       style="border-color:var(--accent-red); color:var(--accent-red)"
-                      title="Discard local commits and replace /data/repo with an exact copy of the remote branch. Use for first-time setup when local and remote diverged (push/pull refused with 'unrelated histories' / 'non-fast-forward').">
+                      title="Replace /data/repo with an exact copy of the remote branch. Destructive — discards local commits not on the remote. Use when Pull refuses with 'unrelated histories' or 'non-fast-forward', or to forcibly restart from the remote state. Your Qui instance is not touched.">
                 <span x-show="!resettingRepo">Reset local to remote</span>
                 <span x-show="resettingRepo">Resetting…</span>
               </button>
