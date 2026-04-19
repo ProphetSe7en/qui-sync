@@ -374,6 +374,20 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 		repoByPath[rr.RepoPath] = rr
 	}
 
+	// Qui's API exposes only the list endpoint (GET /api/instances/{id}
+	// /automations) — there is no single-rule GET. Fetch the whole list
+	// once at apply-start and index by rule ID so every "update_existing"
+	// decision gets O(1) live-state lookup without issuing per-rule
+	// requests (which would all come back as HTTP 405 Method Not Allowed).
+	liveList, err := client.ListAutomations(ctx, req.QuiInstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("list live automations: %w", err)
+	}
+	liveByID := make(map[int]json.RawMessage, len(liveList))
+	for _, a := range liveList {
+		liveByID[a.ID] = a.Raw
+	}
+
 	result := &SyncApplyResult{}
 
 	for _, d := range req.Decisions {
@@ -419,10 +433,10 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 				result.Failed = append(result.Failed, out)
 				continue
 			}
-			liveRaw, err := client.GetAutomation(ctx, req.QuiInstanceID, d.QuiRuleID)
-			if err != nil {
+			liveRaw, ok := liveByID[d.QuiRuleID]
+			if !ok {
 				out.QuiRuleID = d.QuiRuleID
-				out.Error = "fetch live: " + err.Error()
+				out.Error = fmt.Sprintf("rule #%d no longer exists in Qui instance %d — it may have been deleted in Qui since the plan was built", d.QuiRuleID, req.QuiInstanceID)
 				result.Failed = append(result.Failed, out)
 				continue
 			}

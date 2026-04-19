@@ -77,11 +77,23 @@ func (a *Automation) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// GetAutomation fetches a single automation by ID. Used by the apply
-// engine to read live fields before merging with repo data.
+// GetAutomation fetches a single automation by ID. Qui's API does not
+// expose a per-rule GET — only a list GET and per-rule PUT/DELETE —
+// so this helper fetches the full list and picks the matching entry.
+// For apply loops that need many lookups, prefer calling
+// ListAutomations once and indexing by ID; this wrapper is a
+// convenience for single-rule callers.
 func (c *QuiClient) GetAutomation(ctx context.Context, instanceID, ruleID int) (json.RawMessage, error) {
-	u := fmt.Sprintf("%s/api/instances/%d/automations/%d", c.baseURL, instanceID, ruleID)
-	return c.do(ctx, "GET", u, nil)
+	list, err := c.ListAutomations(ctx, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	for _, a := range list {
+		if a.ID == ruleID {
+			return a.Raw, nil
+		}
+	}
+	return nil, fmt.Errorf("rule #%d not found in instance %d", ruleID, instanceID)
 }
 
 // CreateAutomation POSTs a new rule to Qui. The payload should omit
