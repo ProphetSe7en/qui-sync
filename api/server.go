@@ -138,6 +138,7 @@ func (s *Server) Handler() http.Handler {
 	// Sync (consumer-mode) — v0.2 MVP.
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubscriptions)
 	mux.HandleFunc("POST /api/subscriptions", s.handleAddSubscription)
+	mux.HandleFunc("PUT /api/subscriptions/{slug}", s.handleUpdateSubscription)
 	mux.HandleFunc("DELETE /api/subscriptions/{slug}", s.handleRemoveSubscription)
 	mux.HandleFunc("POST /api/subscriptions/{slug}/pull", s.handlePullSubscription)
 	mux.HandleFunc("POST /api/subscriptions/{slug}/plan", s.handlePlanSubscription)

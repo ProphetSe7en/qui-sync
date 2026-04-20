@@ -195,19 +195,39 @@ func (s *ConsumerState) ListSubscriptionSlugs() []string {
 
 // AddSubscription registers a new subscription. Returns an error if slug
 // already exists. The rest of the fields (LastPull*, Rules) start empty.
-func (s *ConsumerState) AddSubscription(slug, url, branch string, auth SubscriptionAuth) error {
+// targetCategory is optional — empty means "all categories".
+func (s *ConsumerState) AddSubscription(slug, url, branch string, auth SubscriptionAuth, targetCategory string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.Subscriptions[slug]; exists {
 		return fmt.Errorf("subscription %q already exists", slug)
 	}
 	s.Subscriptions[slug] = &SubscriptionStateData{
-		URL:     url,
-		Branch:  branch,
-		Auth:    auth,
-		AddedAt: time.Now().UTC(),
-		Rules:   map[string]*SubRuleStateData{},
+		URL:            url,
+		Branch:         branch,
+		Auth:           auth,
+		AddedAt:        time.Now().UTC(),
+		TargetCategory: targetCategory,
+		Rules:          map[string]*SubRuleStateData{},
 	}
+	return nil
+}
+
+// UpdateSubscription updates the editable fields of an existing
+// subscription in place. Slug is immutable (it's the clone-dir name).
+// URL change is allowed but the caller is responsible for invalidating
+// the on-disk clone if the new URL points elsewhere.
+func (s *ConsumerState) UpdateSubscription(slug, url, branch string, auth SubscriptionAuth, targetCategory string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub, exists := s.Subscriptions[slug]
+	if !exists {
+		return fmt.Errorf("subscription %q not found", slug)
+	}
+	sub.URL = url
+	sub.Branch = branch
+	sub.Auth = auth
+	sub.TargetCategory = targetCategory
 	return nil
 }
 

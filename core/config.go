@@ -64,7 +64,7 @@ type BackupConfig struct {
 	// every configured Qui instance. Values: "off" / "" (scheduler
 	// disabled, manual backups only), "12h", "24h", "7d". See
 	// ParseBackupInterval for the full list.
-	Interval string `yaml:"interval,omitempty"`
+	Interval string `yaml:"interval"`
 
 	// RetentionDays is the age threshold for automatic pruning — any
 	// snapshot older than this many days is a candidate for deletion.
@@ -77,7 +77,7 @@ type BackupConfig struct {
 	// KeepLastN is the minimum number of snapshots to keep per instance
 	// regardless of age. 0 or negative means "no minimum — rely on
 	// RetentionDays alone".
-	KeepLastN int `yaml:"keep_last_n,omitempty"`
+	KeepLastN int `yaml:"keep_last_n"`
 
 	Gitignored bool `yaml:"gitignored"`
 }

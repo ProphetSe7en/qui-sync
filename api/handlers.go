@@ -44,7 +44,9 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"export_instances": cfg.ExportInstances,
 		"strip_fields":     cfg.StripFields,
 		"backup": map[string]any{
+			"interval":       cfg.Backup.Interval,
 			"retention_days": cfg.Backup.RetentionDays,
+			"keep_last_n":    cfg.Backup.KeepLastN,
 			"gitignored":     cfg.Backup.Gitignored,
 		},
 	}
@@ -320,8 +322,8 @@ func (s *Server) handleUpdateBackupConfig(w http.ResponseWriter, r *http.Request
 		writeErr(w, 400, fmt.Errorf("interval must be one of: off, 6h, 12h, 24h, 3d, 7d"))
 		return
 	}
-	if iv == "off" {
-		iv = ""
+	if iv == "" {
+		iv = "off" // canonical disabled value — keeps the YAML self-documenting
 	}
 	cfg := s.getConfig()
 	newCfg := *cfg
@@ -918,13 +920,21 @@ func (s *Server) handleRepoRuleDiff(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRepoStatus(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getConfig()
-	status, err := core.GetRepoStatus(r.Context(), cfg.Paths().Repo)
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	// Token is best-effort here — anonymous fetch is fine for public repos.
+	// Without a token on a private repo, ahead/behind stay at 0 (which is
+	// less misleading now that the user can see push_configured=false in
+	// the UI and is prompted to add a token in Settings).
+	tokenBytes, tokenErr := os.ReadFile(tokenPath)
+	token := ""
+	if tokenErr == nil {
+		token = strings.TrimSpace(string(tokenBytes))
+	}
+	status, err := core.GetRepoStatus(r.Context(), cfg.Paths().Repo, token)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
-	_, tokenErr := os.Stat(tokenPath)
 
 	// Note: the old diff_summary field (a git diff --stat text block) was
 	// removed when the structured rule-level diff from /api/repo/rule-diff
@@ -949,7 +959,7 @@ func (s *Server) handleApplyToQui(w http.ResponseWriter, r *http.Request) {
 	// Ensure a __local__ subscription exists pointing at the repo dir.
 	const localSlug = "__local__"
 	if state.SubscriptionSnapshot(localSlug) == nil {
-		_ = state.AddSubscription(localSlug, repoDir, "HEAD", core.SubscriptionAuth{Mode: core.GitAuthPublic})
+		_ = state.AddSubscription(localSlug, repoDir, "HEAD", core.SubscriptionAuth{Mode: core.GitAuthPublic}, "")
 		_ = state.Save(cfg.Paths().State)
 	}
 

@@ -251,7 +251,17 @@ type RepoStatus struct {
 }
 
 // GetRepoStatus checks the git repo's state relative to origin.
-func GetRepoStatus(ctx context.Context, repoDir string) (*RepoStatus, error) {
+//
+// token is optional. If provided it is injected into the origin URL for
+// the fetch that populates refs/remotes/origin/<branch>; without it the
+// fetch falls back to anonymous and silently no-ops on private repos —
+// which used to leave ahead/behind stuck at 0 and the UI showing a
+// misleading "In sync with remote" even when the user had unpushed
+// commits. The fetch always uses an explicit refspec
+// (<branch>:refs/remotes/origin/<branch>) so the tracking ref exists
+// even when qui-sync's other write paths (PullRepo / ResetLocalToRemote)
+// have only ever populated FETCH_HEAD.
+func GetRepoStatus(ctx context.Context, repoDir, token string) (*RepoStatus, error) {
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
 		return &RepoStatus{}, nil // not a git repo yet
 	}
@@ -270,8 +280,26 @@ func GetRepoStatus(ctx context.Context, repoDir string) (*RepoStatus, error) {
 		status.Branch = strings.TrimSpace(out)
 	}
 
-	// Fetch to know ahead/behind (best-effort, may fail without auth)
-	_ = runGitSilent(ctx, repoDir, nil, "fetch", "--quiet", "origin")
+	// Fetch to populate refs/remotes/origin/<branch> so the rev-list
+	// counts below have something to compare against. Best-effort —
+	// network/auth failures leave ahead/behind at zero rather than
+	// breaking the status endpoint entirely.
+	if status.Branch != "" {
+		if originOut, err := runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url"); err == nil {
+			originURL := strings.TrimSpace(originOut)
+			if originURL != "" {
+				auth := GitAuth{Mode: GitAuthPublic}
+				if token != "" {
+					auth = GitAuth{Mode: GitAuthToken, Token: token}
+				}
+				if effectiveURL, env, err := prepareAuth(originURL, auth); err == nil {
+					// Force-update with `+` so a remote rebase/force-push is reflected.
+					refspec := "+" + status.Branch + ":refs/remotes/origin/" + status.Branch
+					_ = runGitSilent(ctx, repoDir, env, "fetch", effectiveURL, refspec)
+				}
+			}
+		}
+	}
 
 	// Ahead
 	out, err = runGit(ctx, repoDir, nil, "rev-list", "--count", "origin/"+status.Branch+"..HEAD")
@@ -337,10 +365,15 @@ func PullRepo(ctx context.Context, repoDir, token string) error {
 	// been observed to send anonymous requests in some git versions
 	// (the credential override doesn't always propagate to the HTTPS
 	// backend) — fetching via an explicit URL bypasses that path.
-	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, branch); err != nil {
+	//
+	// Refspec writes refs/remotes/origin/<branch> in addition to
+	// FETCH_HEAD so subsequent GetRepoStatus calls have a tracking ref
+	// to compute ahead/behind against.
+	refspec := "+" + branch + ":refs/remotes/origin/" + branch
+	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, refspec); err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
-	if _, err := runGit(ctx, repoDir, nil, "merge", "--ff-only", "FETCH_HEAD"); err != nil {
+	if _, err := runGit(ctx, repoDir, nil, "merge", "--ff-only", "refs/remotes/origin/"+branch); err != nil {
 		return fmt.Errorf("pull (merge): %w", err)
 	}
 	return nil
@@ -386,10 +419,14 @@ func ResetLocalToRemote(ctx context.Context, repoDir, token string) error {
 	}
 	branch = strings.TrimSpace(branch)
 
-	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, branch); err != nil {
+	// Refspec populates refs/remotes/origin/<branch> in addition to
+	// FETCH_HEAD so the post-reset GetRepoStatus has a tracking ref
+	// for ahead/behind comparisons.
+	refspec := "+" + branch + ":refs/remotes/origin/" + branch
+	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, refspec); err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
-	if _, err := runGit(ctx, repoDir, nil, "reset", "--hard", "FETCH_HEAD"); err != nil {
+	if _, err := runGit(ctx, repoDir, nil, "reset", "--hard", "refs/remotes/origin/"+branch); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
 	return nil

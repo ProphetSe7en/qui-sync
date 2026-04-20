@@ -262,6 +262,20 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 		return nil, fmt.Errorf("list repo rules: %w", err)
 	}
 
+	// Per-subscription category filter. Empty TargetCategory means "all
+	// categories"; a set value restricts Plan/Apply to rules in that one
+	// folder. Mirrors the auto-sync filter so manual + automated runs
+	// agree on scope.
+	if sub.TargetCategory != "" {
+		filtered := repoRules[:0]
+		for _, rr := range repoRules {
+			if rr.Category == sub.TargetCategory {
+				filtered = append(filtered, rr)
+			}
+		}
+		repoRules = filtered
+	}
+
 	liveRules, err := client.ListAutomations(ctx, instanceID)
 	if err != nil {
 		return nil, fmt.Errorf("list live automations: %w", err)

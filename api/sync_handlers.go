@@ -32,14 +32,16 @@ func (s *Server) gitKeyDir(slug string) string {
 // ---- subscriptions CRUD ----
 
 type subscriptionSummary struct {
-	Slug          string `json:"slug"`
-	URL           string `json:"url"`
-	Branch        string `json:"branch"`
-	AuthMode      string `json:"auth_mode"`
-	LastPullSHA   string `json:"last_pull_sha,omitempty"`
-	LastPullAt    string `json:"last_pull_at,omitempty"`
-	RuleCount     int    `json:"rule_count"`      // rules with decisions in state
-	RepoRuleCount int    `json:"repo_rule_count"` // rules found in the cloned repo
+	Slug             string   `json:"slug"`
+	URL              string   `json:"url"`
+	Branch           string   `json:"branch"`
+	AuthMode         string   `json:"auth_mode"`
+	TargetCategory   string   `json:"target_category,omitempty"`
+	RepoCategories   []string `json:"repo_categories,omitempty"` // top-level dirs in the clone (for the edit-modal dropdown)
+	LastPullSHA      string   `json:"last_pull_sha,omitempty"`
+	LastPullAt       string   `json:"last_pull_at,omitempty"`
+	RuleCount        int      `json:"rule_count"`      // rules with decisions in state
+	RepoRuleCount    int      `json:"repo_rule_count"` // rules found in the cloned repo
 }
 
 func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request) {
@@ -52,26 +54,37 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		sum := subscriptionSummary{
-			Slug:        slug,
-			URL:         sub.URL,
-			Branch:      sub.Branch,
-			AuthMode:    string(sub.Auth.Mode),
-			LastPullSHA: sub.LastPullSHA,
-			RuleCount:   len(sub.Rules),
+			Slug:           slug,
+			URL:            sub.URL,
+			Branch:         sub.Branch,
+			AuthMode:       string(sub.Auth.Mode),
+			TargetCategory: sub.TargetCategory,
+			LastPullSHA:    sub.LastPullSHA,
+			RuleCount:      len(sub.Rules),
 		}
-		// Count rules in the cloned repo on disk (if pulled).
+		// Count rules + collect categories from the cloned repo. The
+		// repo layout is <category>/<Rule Name>.json at root (the legacy
+		// `rules/<category>/` layout is no longer used — see PROJECT.md
+		// "single file-layout convention" 2026-04-19).
 		cloneDir := core.SubscriptionCloneDir(cfg.Paths().Sources, slug)
-		if entries, err := os.ReadDir(filepath.Join(cloneDir, "rules")); err == nil {
+		if entries, err := os.ReadDir(cloneDir); err == nil {
 			for _, cat := range entries {
-				if !cat.IsDir() {
+				if !cat.IsDir() || strings.HasPrefix(cat.Name(), ".") || cat.Name() == "archive" {
 					continue
 				}
-				if files, err := os.ReadDir(filepath.Join(cloneDir, "rules", cat.Name())); err == nil {
-					for _, f := range files {
-						if !f.IsDir() && filepath.Ext(f.Name()) == ".json" {
-							sum.RepoRuleCount++
-						}
+				files, err := os.ReadDir(filepath.Join(cloneDir, cat.Name()))
+				if err != nil {
+					continue
+				}
+				ruleCount := 0
+				for _, f := range files {
+					if !f.IsDir() && filepath.Ext(f.Name()) == ".json" {
+						ruleCount++
 					}
+				}
+				if ruleCount > 0 {
+					sum.RepoRuleCount += ruleCount
+					sum.RepoCategories = append(sum.RepoCategories, cat.Name())
 				}
 			}
 		}
@@ -84,11 +97,12 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 }
 
 type addSubscriptionReq struct {
-	Slug     string `json:"slug"`
-	URL      string `json:"url"`
-	Branch   string `json:"branch"`
-	AuthMode string `json:"auth_mode"` // "public" | "ssh_deploy_key" | "token"
-	Token    string `json:"token,omitempty"`
+	Slug           string `json:"slug"`
+	URL            string `json:"url"`
+	Branch         string `json:"branch"`
+	AuthMode       string `json:"auth_mode"` // "public" | "ssh_deploy_key" | "token"
+	Token          string `json:"token,omitempty"`
+	TargetCategory string `json:"target_category,omitempty"` // optional folder filter (e.g. "movies")
 }
 
 func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
@@ -148,7 +162,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := state.AddSubscription(req.Slug, req.URL, req.Branch, auth); err != nil {
+	if err := state.AddSubscription(req.Slug, req.URL, req.Branch, auth, strings.TrimSpace(req.TargetCategory)); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -157,6 +171,82 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, map[string]any{"slug": req.Slug})
+}
+
+// handleUpdateSubscription edits an existing subscription's mutable fields.
+// Slug is immutable. URL change invalidates the on-disk clone (next pull
+// re-clones from the new URL). Auth changes follow the same rules as add:
+// token writes a new file, ssh_deploy_key requires the key to already exist.
+// Empty token in token mode means "keep the existing PAT" — common case
+// for editing the category without re-entering credentials.
+func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request) {
+	slug := r.PathValue("slug")
+	var req addSubscriptionReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.URL == "" {
+		writeErr(w, 400, fmt.Errorf("url is required"))
+		return
+	}
+	if req.Branch == "" {
+		req.Branch = "main"
+	}
+
+	cfg := s.getConfig()
+	state := s.getConsumerState()
+	existing := state.SubscriptionSnapshot(slug)
+	if existing == nil {
+		writeErr(w, 404, fmt.Errorf("subscription %q not found", slug))
+		return
+	}
+
+	auth := core.SubscriptionAuth{Mode: core.GitAuthMode(req.AuthMode)}
+	switch req.AuthMode {
+	case "public", "":
+		auth.Mode = core.GitAuthPublic
+	case "ssh_deploy_key":
+		keyDir := s.gitKeyDir(slug)
+		auth.KeyFile = filepath.Join(keyDir, "id_ed25519")
+		if _, err := os.Stat(auth.KeyFile); err != nil {
+			writeErr(w, 400, fmt.Errorf("ssh key missing — call /api/subscriptions/generate-key first: %w", err))
+			return
+		}
+	case "token":
+		keyDir := s.gitKeyDir(slug)
+		auth.TokenFile = filepath.Join(keyDir, "token")
+		if req.Token != "" {
+			if err := os.MkdirAll(keyDir, 0o700); err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+			if err := os.WriteFile(auth.TokenFile, []byte(req.Token+"\n"), 0o600); err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+		} else if _, err := os.Stat(auth.TokenFile); err != nil {
+			writeErr(w, 400, fmt.Errorf("no existing token to keep — provide a token"))
+			return
+		}
+	default:
+		writeErr(w, 400, fmt.Errorf("invalid auth_mode %q", req.AuthMode))
+		return
+	}
+
+	if existing.URL != req.URL {
+		_ = os.RemoveAll(core.SubscriptionCloneDir(cfg.Paths().Sources, slug))
+	}
+
+	if err := state.UpdateSubscription(slug, req.URL, req.Branch, auth, strings.TrimSpace(req.TargetCategory)); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := state.Save(cfg.Paths().State); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"slug": slug})
 }
 
 func (s *Server) handleRemoveSubscription(w http.ResponseWriter, r *http.Request) {

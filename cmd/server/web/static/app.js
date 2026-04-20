@@ -49,8 +49,10 @@ function quiSyncApp() {
     planCategoryFilter: {},  // slug -> '' (all) or category name
     autoPullInterval: 'off',
     addSubOpen: false,
-    addSubDraft: { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '' },
+    addSubEditing: false, // true when the modal is editing an existing subscription
+    addSubDraft: { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '' },
     addSubSSHKey: '', // non-empty after phase-1 generate; empty means phase-1 hasn't run yet
+    addSubCategoryHints: [], // datalist options when editing — categories detected in the subscription's clone
     applyModal: { open: false, slug: '', instanceName: '', create: 0, update: 0, skip: 0 },
     hideDevBanner: localStorage.getItem('qui.hideDevBanner') === 'true',
     hideExportHelp: localStorage.getItem('qui.hideExportHelp') === 'true',
@@ -597,18 +599,41 @@ function quiSyncApp() {
     },
 
     openAddSubModal() {
-      this.addSubDraft = { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '' };
+      this.addSubDraft = { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '' };
       this.addSubSSHKey = '';
+      this.addSubEditing = false;
+      this.addSubCategoryHints = [];
+      this.addSubOpen = true;
+    },
+
+    // openEditSub re-uses the Add-modal in edit mode. The slug is locked
+    // (it's the clone-dir name on disk and renaming would require moving
+    // files); everything else is editable. Token field is left empty —
+    // submitting blank tells the backend to keep the existing PAT.
+    openEditSub(sub) {
+      this.addSubDraft = {
+        slug: sub.slug,
+        url: sub.url,
+        branch: sub.branch || 'main',
+        auth_mode: sub.auth_mode || 'public',
+        token: '',
+        target_category: sub.target_category || '',
+      };
+      this.addSubSSHKey = '';
+      this.addSubEditing = true;
+      this.addSubCategoryHints = Array.isArray(sub.repo_categories) ? sub.repo_categories : [];
       this.addSubOpen = true;
     },
 
     cancelAddSub() {
       this.addSubOpen = false;
       this.addSubSSHKey = '';
+      this.addSubEditing = false;
     },
 
     // Button label reflects the current phase of the flow.
     addSubNextLabel() {
+      if (this.addSubEditing) return 'Save';
       if (this.addSubDraft.auth_mode === 'ssh_deploy_key' && !this.addSubSSHKey) {
         return 'Generate deploy key';
       }
@@ -620,6 +645,24 @@ function quiSyncApp() {
       if (!d.slug || !d.url) return;
       if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(d.slug)) {
         this.toast('error', 'Invalid name — use lowercase letters, digits, hyphens and underscores only');
+        return;
+      }
+
+      // Edit path — PUT to existing subscription. SSH key generation is
+      // not supported here (key already exists or auth mode is changing).
+      if (this.addSubEditing) {
+        try {
+          await this.apiFetch('/api/subscriptions/' + encodeURIComponent(d.slug), {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(d),
+          });
+          this.addSubOpen = false;
+          this.addSubEditing = false;
+          await this.loadSubscriptions();
+          this.toast('info', 'Subscription updated: ' + d.slug);
+        } catch (e) {
+          this.toast('error', 'Update failed: ' + e.message);
+        }
         return;
       }
 

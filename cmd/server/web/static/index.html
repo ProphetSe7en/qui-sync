@@ -953,6 +953,10 @@
               <span class="sub-name"><b x-text="sub.slug"></b></span>
               <span class="sub-url dim" x-text="sub.url"></span>
               <span class="sub-meta">
+                <span x-show="sub.target_category"
+                      class="badge"
+                      style="margin-right:8px; background:var(--accent-blue-bg, var(--bg-surface)); color:var(--accent-blue, var(--text-primary)); padding:2px 8px; border-radius:var(--radius); font-size:var(--font-xs)"
+                      x-text="'only ' + sub.target_category"></span>
                 <span x-text="(sub.repo_rule_count || sub.rule_count || 0) + ' rules'"></span>
                 <span x-show="sub.last_pull_at" class="dim"
                       style="margin-left:8px; font-size:var(--font-xs)"
@@ -960,6 +964,7 @@
               </span>
               <span class="sub-actions">
                 <button class="btn btn-sm" @click.stop="pullSub(sub.slug)">Pull</button>
+                <button class="btn btn-sm" @click.stop="openEditSub(sub)">Edit</button>
                 <button class="btn btn-sm btn-danger" @click.stop="removeSub(sub)">Remove</button>
               </span>
             </div>
@@ -1107,13 +1112,14 @@
   <div class="modal-backdrop" x-show="addSubOpen" @keydown.escape.window="cancelAddSub()"
        x-transition.opacity style="display:none">
     <div class="modal" @click.stop style="width:620px">
-      <div class="modal-title">Add subscription</div>
+      <div class="modal-title" x-text="addSubEditing ? 'Edit subscription' : 'Add subscription'"></div>
       <div class="modal-body">
         <div class="form-grid">
           <label>Name</label>
           <input class="input" x-model="addSubDraft.slug" placeholder="e.g. prophet-movies, my-tv-setup"
                  autocomplete="off" spellcheck="false"
-                 :disabled="addSubSSHKey.length > 0">
+                 :disabled="addSubSSHKey.length > 0 || addSubEditing"
+                 :title="addSubEditing ? 'Name is fixed once a subscription exists — remove and re-add to rename' : ''">
           <label>URL</label>
           <input class="input" x-model="addSubDraft.url" placeholder="https://github.com/.../qui-automations.git or /data"
                  autocomplete="off" spellcheck="false"
@@ -1132,10 +1138,26 @@
             <div style="grid-column:1/-1; display:contents">
               <label>Token</label>
               <input class="input" type="password" x-model="addSubDraft.token"
-                     placeholder="ghp_... (stored at /config/git-keys/&lt;slug&gt;/token, 0600)"
+                     :placeholder="addSubEditing ? 'Leave blank to keep existing token' : 'ghp_... (stored at /config/git-keys/&lt;slug&gt;/token, 0600)'"
                      autocomplete="new-password" data-1p-ignore data-lpignore="true" spellcheck="false">
             </div>
           </template>
+          <label>Category filter</label>
+          <div>
+            <input class="input" x-model="addSubDraft.target_category"
+                   list="addSubCategoryOptions"
+                   placeholder="Leave empty for all categories"
+                   autocomplete="off" spellcheck="false"
+                   title="Restrict Plan/Apply to one folder in the repo (e.g. 'movies' or 'misc'). Leave blank to sync the whole repo.">
+            <datalist id="addSubCategoryOptions">
+              <template x-for="c in addSubCategoryHints" :key="c">
+                <option :value="c"></option>
+              </template>
+            </datalist>
+            <p class="dim" style="font-size:var(--font-xs); margin-top:4px; margin-bottom:0">
+              Folder name from the repo (e.g. <code>movies</code>, <code>misc</code>). Blank = sync everything.
+            </p>
+          </div>
         </div>
 
         <!-- SSH hint before generation -->
