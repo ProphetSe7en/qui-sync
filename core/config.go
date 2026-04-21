@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -60,11 +61,18 @@ type Mappings struct {
 }
 
 type BackupConfig struct {
-	// Interval is how often the background scheduler runs a backup of
-	// every configured Qui instance. Values: "off" / "" (scheduler
-	// disabled, manual backups only), "12h", "24h", "7d". See
-	// ParseBackupInterval for the full list.
-	Interval string `yaml:"interval"`
+	// Cron is the 5-field cron expression (min hour dom month dow) that
+	// decides when the scheduler fires. Any expression robfig/cron/v3's
+	// standard parser accepts is valid — including `*/6`, ranges,
+	// comma-separated lists, and @daily/@weekly/@monthly shortcuts.
+	// Empty string or an invalid expression is treated as "disabled"
+	// regardless of the Enabled flag below.
+	Cron string `yaml:"cron"`
+
+	// Enabled is an independent on/off toggle. Lets the user pause the
+	// schedule without losing the cron expression, so flipping it back
+	// on restores the previous cadence without having to re-enter it.
+	Enabled bool `yaml:"enabled"`
 
 	// RetentionDays is the age threshold for automatic pruning — any
 	// snapshot older than this many days is a candidate for deletion.
@@ -134,7 +142,7 @@ func defaultConfig(path string) *Config {
 	return &Config{
 		Mode:    "maintainer",
 		RepoDir: "/data/repo",
-		Backup:  BackupConfig{RetentionDays: 90, Gitignored: true},
+		Backup:  BackupConfig{Cron: "0 3 * * *", Enabled: false, RetentionDays: 90, Gitignored: true},
 	}
 }
 
@@ -220,24 +228,18 @@ func ParsePullInterval(s string) time.Duration {
 	return 0 // off or unrecognised
 }
 
-// ParseBackupInterval is the scheduler-friendly cadence table for the
-// Backup & Restore worker. Supports longer intervals than the pull
-// interval since full-instance snapshots are heavier and rarely need
-// sub-hour cadence. Returns 0 for "off" or unrecognised values.
-func ParseBackupInterval(s string) time.Duration {
-	switch strings.TrimSpace(strings.ToLower(s)) {
-	case "6h":
-		return 6 * time.Hour
-	case "12h":
-		return 12 * time.Hour
-	case "24h":
-		return 24 * time.Hour
-	case "3d":
-		return 3 * 24 * time.Hour
-	case "7d":
-		return 7 * 24 * time.Hour
+// ParseBackupCron validates a cron expression using the same grammar
+// the BackupScheduler uses at runtime (robfig/cron/v3 standard parser —
+// 5-field Unix cron plus @daily/@weekly/@monthly shortcuts). Returns
+// the compiled schedule when valid, or an error when empty / malformed.
+// Keeping parsing in one place so UI validation + scheduler dispatch
+// can't drift apart.
+func ParseBackupCron(expr string) (cron.Schedule, error) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, fmt.Errorf("cron expression is empty")
 	}
-	return 0 // off or unrecognised
+	return cron.ParseStandard(expr)
 }
 
 // DefaultConfigPath returns ~/.config/qui-sync/config.yml

@@ -67,8 +67,9 @@ func main() {
 	go worker.Start(ctx)
 
 	// Scheduled full-instance backups. The worker polls every minute
-	// and dispatches when cfg.Backup.Interval has elapsed — disabled
-	// by default until the user configures it via Settings.
+	// and dispatches when the cfg.Backup.Cron expression fires — only
+	// when cfg.Backup.Enabled is true. Disabled by default until the
+	// user configures it via Settings.
 	backupScheduler := core.NewBackupScheduler(srv.GetConfig, srv.NewClient)
 	go backupScheduler.Start(ctx)
 

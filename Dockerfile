@@ -7,10 +7,19 @@ FROM golang:1.24-alpine AS builder
 
 WORKDIR /src
 
+# Bundle the cronstrue client-side cron-to-human library into the static
+# assets before `go build` captures them into the embed.FS. Doing this
+# in the builder stage (not at runtime) means the final image has no
+# network dependency — cronstrue is version-pinned and ships inside.
+RUN apk add --no-cache wget
+
 COPY go.mod go.sum* ./
 RUN go mod download
 
 COPY . .
+
+RUN wget -q -O cmd/server/web/static/cronstrue.min.js \
+    "https://cdn.jsdelivr.net/npm/cronstrue@2.50.0/dist/cronstrue.min.js"
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/qui-sync-server ./cmd/server
 

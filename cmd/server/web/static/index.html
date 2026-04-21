@@ -8,6 +8,10 @@
   <!-- Load order matters: app.js defines quiSyncApp() which Alpine evaluates
        via x-data="quiSyncApp()" on body. If alpine loads first, the function
        is still undefined and all x-show sections render blank. -->
+  <!-- cronstrue turns "0 3 * * *" into "At 03:00, every day" client-side so
+       the Backup settings can show live translations without a server
+       roundtrip on every keystroke. Vendored in Dockerfile (no runtime CDN). -->
+  <script defer src="cronstrue.min.js"></script>
   <script defer src="app.js"></script>
   <script defer src="alpine.min.js"></script>
 </head>
@@ -767,15 +771,26 @@
       </div>
       <div class="panel-body">
         <div class="form-grid">
-          <label>Schedule</label>
-          <select class="input" style="width:180px" x-model="backupDraft.interval">
-            <option value="off">Off (manual only)</option>
-            <option value="6h">Every 6 hours</option>
-            <option value="12h">Every 12 hours</option>
-            <option value="24h">Every 24 hours</option>
-            <option value="3d">Every 3 days</option>
-            <option value="7d">Every 7 days</option>
-          </select>
+          <label>Enabled</label>
+          <div>
+            <label style="display:inline-flex; align-items:center; gap:8px; font-weight:normal">
+              <input type="checkbox" x-model="backupDraft.enabled">
+              <span class="dim" style="font-size:var(--font-xs)"
+                    x-text="backupDraft.enabled ? 'Scheduled backups run per the cron below' : 'Paused — backups run only when triggered manually'"></span>
+            </label>
+          </div>
+
+          <label>Cron</label>
+          <div>
+            <input class="input" style="width:220px; font-family:var(--font-mono)"
+                   x-model="backupDraft.cron"
+                   placeholder="0 3 * * *"
+                   :disabled="!backupDraft.enabled"
+                   title="Standard 5-field cron (minute hour day-of-month month day-of-week). Shortcuts like @daily, @weekly, @hourly are accepted.">
+            <div style="margin-top:4px; font-size:var(--font-xs); min-height:1.4em"
+                 :style="backupCronInvalid ? 'color:var(--text-err)' : 'color:var(--text-secondary)'"
+                 x-text="backupCronHuman"></div>
+          </div>
 
           <label>Retention days</label>
           <input class="input" type="number" min="0" max="3650" style="width:100px"
@@ -789,7 +804,8 @@
           <input type="checkbox" x-model="backupDraft.gitignored">
         </div>
         <p class="dim" style="font-size:var(--font-xs); margin-top:8px; line-height:1.5">
-          <b>Schedule</b> — how often the background worker snapshots every configured Qui instance. Off means manual backups only.<br>
+          <b>Enabled</b> — master switch. Off means manual backups only; the cron keeps its value so flipping it back on resumes the previous cadence.<br>
+          <b>Cron</b> — 5-field expression (<code>minute hour day-of-month month day-of-week</code>). Shortcuts <code>@daily</code>, <code>@weekly</code>, <code>@hourly</code>, <code>@monthly</code> are accepted. Example: <code>0 3 * * *</code> = every day at 03:00.<br>
           <b>Retention days</b> — snapshots older than this are deleted after the next scheduled run. 0 = never expire by age.<br>
           <b>Keep last N</b> — minimum number of snapshots kept per instance regardless of age. 0 = no minimum. When both are set, snapshots must satisfy both rules to be evicted (old AND outside the floor).<br>
           Backups live in <code>&lt;repo&gt;/../backups-full/</code>. Full 1:1 copies including trackers — never pushed to GitHub when gitignored is on.

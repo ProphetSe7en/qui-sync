@@ -184,21 +184,33 @@ func TestListInstanceBackupsSkipsTmpDirs(t *testing.T) {
 	}
 }
 
-// TestParseBackupInterval pins the accepted interval strings.
-func TestParseBackupInterval(t *testing.T) {
-	cases := map[string]time.Duration{
-		"6h":      6 * time.Hour,
-		"12h":     12 * time.Hour,
-		"24h":     24 * time.Hour,
-		"3d":      3 * 24 * time.Hour,
-		"7d":      7 * 24 * time.Hour,
-		"":        0,
-		"off":     0,
-		"nonsense": 0,
+// TestParseBackupCron pins what counts as a valid cron expression for
+// the backup scheduler. Invalid / empty strings return an error so the
+// UI validator + runtime dispatch agree on "off".
+func TestParseBackupCron(t *testing.T) {
+	valid := []string{
+		"0 3 * * *",       // every day at 03:00
+		"*/15 * * * *",    // every 15 min
+		"0 */6 * * *",     // every 6 hours on the hour
+		"0 3 * * 0",       // Sundays at 03:00
+		"@daily",          // shortcut
+		"@weekly",         // shortcut
+		"@hourly",         // shortcut
 	}
-	for in, want := range cases {
-		if got := ParseBackupInterval(in); got != want {
-			t.Errorf("ParseBackupInterval(%q) = %v, want %v", in, got, want)
+	for _, expr := range valid {
+		if _, err := ParseBackupCron(expr); err != nil {
+			t.Errorf("ParseBackupCron(%q) unexpected error: %v", expr, err)
+		}
+	}
+	invalid := []string{
+		"",              // empty
+		"6h",            // old-style interval, no longer accepted
+		"not a cron",    // garbage
+		"60 25 * * *",   // minute 60, hour 25 — out of range
+	}
+	for _, expr := range invalid {
+		if _, err := ParseBackupCron(expr); err == nil {
+			t.Errorf("ParseBackupCron(%q) expected error, got nil", expr)
 		}
 	}
 }

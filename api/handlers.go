@@ -44,7 +44,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"export_instances": cfg.ExportInstances,
 		"strip_fields":     cfg.StripFields,
 		"backup": map[string]any{
-			"interval":       cfg.Backup.Interval,
+			"cron":           cfg.Backup.Cron,
+			"enabled":        cfg.Backup.Enabled,
 			"retention_days": cfg.Backup.RetentionDays,
 			"keep_last_n":    cfg.Backup.KeepLastN,
 			"gitignored":     cfg.Backup.Gitignored,
@@ -295,7 +296,8 @@ func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
 // ---- Backup config edit ----
 
 type backupConfigReq struct {
-	Interval      string `json:"interval"`
+	Cron          string `json:"cron"`
+	Enabled       bool   `json:"enabled"`
 	RetentionDays int    `json:"retention_days"`
 	KeepLastN     int    `json:"keep_last_n"`
 	Gitignored    bool   `json:"gitignored"`
@@ -315,19 +317,21 @@ func (s *Server) handleUpdateBackupConfig(w http.ResponseWriter, r *http.Request
 		writeErr(w, 400, fmt.Errorf("keep_last_n must be 0-10000"))
 		return
 	}
-	// Interval is validated by ParseBackupInterval returning 0 for
-	// unknowns; we also accept "" / "off" explicitly as disabled.
-	iv := strings.TrimSpace(strings.ToLower(req.Interval))
-	if iv != "" && iv != "off" && core.ParseBackupInterval(iv) == 0 {
-		writeErr(w, 400, fmt.Errorf("interval must be one of: off, 6h, 12h, 24h, 3d, 7d"))
-		return
-	}
-	if iv == "" {
-		iv = "off" // canonical disabled value — keeps the YAML self-documenting
+	// Cron validation only when enabled — an empty/invalid cron with
+	// the schedule off is a legitimate "I haven't configured it yet"
+	// state, not an error. When enabled is true, the cron must parse
+	// so the scheduler actually has something to fire on.
+	cronExpr := strings.TrimSpace(req.Cron)
+	if req.Enabled {
+		if _, err := core.ParseBackupCron(cronExpr); err != nil {
+			writeErr(w, 400, fmt.Errorf("cron is required when enabled: %w", err))
+			return
+		}
 	}
 	cfg := s.getConfig()
 	newCfg := *cfg
-	newCfg.Backup.Interval = iv
+	newCfg.Backup.Cron = cronExpr
+	newCfg.Backup.Enabled = req.Enabled
 	newCfg.Backup.RetentionDays = req.RetentionDays
 	newCfg.Backup.KeepLastN = req.KeepLastN
 	newCfg.Backup.Gitignored = req.Gitignored

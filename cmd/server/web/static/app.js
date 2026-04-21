@@ -34,7 +34,7 @@ function quiSyncApp() {
     // Settings tab — drafts live outside `config` so user can edit without
     // affecting the displayed config until Save is clicked.
     quiDraft: { url: '', apiKey: '' },
-    backupDraft: { interval: 'off', retention_days: 90, keep_last_n: 0, gitignored: true },
+    backupDraft: { cron: '0 3 * * *', enabled: false, retention_days: 90, keep_last_n: 0, gitignored: true },
     addInstanceOpen: false,
     addInstanceDraft: { qui_instance_id: 0, category: '' },
     availableQuiInstances: [],
@@ -436,11 +436,36 @@ function quiSyncApp() {
       if (!this.config) return;
       const b = this.config.backup || {};
       this.backupDraft = {
-        interval: b.interval || 'off',
+        cron: b.cron || '0 3 * * *',
+        enabled: !!b.enabled,
         retention_days: b.retention_days || 0,
         keep_last_n: b.keep_last_n || 0,
         gitignored: !!b.gitignored,
       };
+    },
+
+    // backupCronHuman converts the current cron draft into a readable
+    // sentence ("At 03:00, every day"). Uses cronstrue (vendored in
+    // Dockerfile) — client-side only, no server roundtrip on keystroke.
+    // When Enabled is off we gray the line out since the expression
+    // won't actually run; the text still updates so the user can see
+    // what would happen if they flipped Enabled on.
+    get backupCronHuman() {
+      const expr = (this.backupDraft.cron || '').trim();
+      if (!expr) return this.backupDraft.enabled ? 'Cron is required when Enabled is on.' : 'No cron set — schedule paused.';
+      if (typeof cronstrue === 'undefined') return '';
+      try {
+        const desc = cronstrue.toString(expr, { use24HourTimeFormat: true });
+        return this.backupDraft.enabled ? desc : desc + ' · paused';
+      } catch (e) {
+        return 'Invalid cron expression';
+      }
+    },
+    get backupCronInvalid() {
+      const expr = (this.backupDraft.cron || '').trim();
+      if (!expr) return this.backupDraft.enabled;
+      if (typeof cronstrue === 'undefined') return false;
+      try { cronstrue.toString(expr); return false; } catch { return true; }
     },
 
     async saveQuiConfig() {
