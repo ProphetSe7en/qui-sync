@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prophetse7en/qui-sync/core"
+	"github.com/prophetse7en/qui-sync/internal/core"
 )
 
 // Server wires HTTP handlers to a loaded config. Config can be reloaded at
@@ -27,18 +27,29 @@ import (
 // Loading per-request would cause lost writes on concurrent mutations since
 // each load returns a fresh object with its own mutex. The Server keeps one
 // live pointer; handlers mutate it under its internal sync.RWMutex.
+//
+// BackupScheduler is injected post-construction (main.go calls
+// SetBackupScheduler) so the backup-config handler can call Reload()
+// after a Save without wiring a circular dependency between api and
+// core. nil is tolerated: handlers no-op the reload when the scheduler
+// hasn't been wired (e.g. in unit tests).
 type Server struct {
-	mu            sync.RWMutex
-	cfg           *core.Config
-	consumerState *core.ConsumerState
-	cfgPath       string
-	staticFS      fs.FS
-	startedAt     time.Time
-	version       string
-	middlewares   []Middleware
+	mu sync.RWMutex
+	// cfgWriteMu serializes load → modify → SaveConfig → swap so two
+	// concurrent UI saves can't lose each other's changes. Held by every
+	// config-mutating handler from entry through the s.cfg pointer swap.
+	// Distinct from s.mu so concurrent reads (getConfig, getConsumerState)
+	// stay non-blocking while a save is in flight.
+	cfgWriteMu      sync.Mutex
+	cfg             *core.Config
+	consumerState   *core.ConsumerState
+	cfgPath         string
+	staticFS        fs.FS
+	startedAt       time.Time
+	version         string
+	backupScheduler *core.BackupScheduler
+	backupRuns      *core.BackupRunStore
 }
-
-type Middleware func(http.Handler) http.Handler
 
 func NewServer(cfgPath string, cfg *core.Config, staticFS fs.FS, version string) (*Server, error) {
 	consumerState, err := core.LoadConsumerState(cfg.Paths().State)
@@ -53,11 +64,6 @@ func NewServer(cfgPath string, cfg *core.Config, staticFS fs.FS, version string)
 		startedAt:     time.Now(),
 		version:       version,
 	}, nil
-}
-
-// Use appends a middleware. v0.1 leaves this as an extension hook (auth, etc.).
-func (s *Server) Use(m Middleware) {
-	s.middlewares = append(s.middlewares, m)
 }
 
 func (s *Server) getConfig() *core.Config {
@@ -87,32 +93,56 @@ func (s *Server) GetConsumerState() *core.ConsumerState { return s.getConsumerSt
 // NewClient creates a QuiClient from current config. Exported for auto-sync worker.
 func (s *Server) NewClient() (*core.QuiClient, error) { return s.newClient() }
 
+// SetBackupScheduler injects the running scheduler so config-save
+// handlers can Reload() it. Wired by main.go right after
+// NewBackupScheduler. Idempotent.
+func (s *Server) SetBackupScheduler(b *core.BackupScheduler) {
+	s.mu.Lock()
+	s.backupScheduler = b
+	s.mu.Unlock()
+}
+
+// SetBackupRunStore injects the run-store so list/delete/run handlers
+// can read and update last-run timestamps. Wired by main.go after
+// loading the store. Idempotent.
+func (s *Server) SetBackupRunStore(rs *core.BackupRunStore) {
+	s.mu.Lock()
+	s.backupRuns = rs
+	s.mu.Unlock()
+}
+
+// BackupRuns returns the run-store handle for handlers that need to
+// read/write last-run. nil-safe — handlers should fall back gracefully.
+func (s *Server) BackupRuns() *core.BackupRunStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.backupRuns
+}
+
+// reloadBackupScheduler is the handler-side helper. nil-safe so unit
+// tests that don't wire a scheduler don't blow up.
+func (s *Server) reloadBackupScheduler() {
+	s.mu.RLock()
+	b := s.backupScheduler
+	s.mu.RUnlock()
+	if b != nil {
+		b.Reload()
+	}
+}
+
 // getConsumerState returns the Server-owned consumer state pointer.
-// Callers mutate through ConsumerState's own internal RWMutex; the Server's
-// outer mutex only protects the pointer itself (for ReloadConsumerState).
+// Callers mutate through ConsumerState's own internal RWMutex; the
+// Server's outer mutex only protects the pointer itself.
 func (s *Server) getConsumerState() *core.ConsumerState {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.consumerState
 }
 
-// ReloadConsumerState re-reads consumer.state.json from disk and swaps the
-// pointer. Used when state was modified externally (rare in practice).
-func (s *Server) ReloadConsumerState() error {
-	state, err := core.LoadConsumerState(s.cfg.RepoDir)
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.consumerState = state
-	s.mu.Unlock()
-	return nil
-}
-
-// Handler builds the route table. Call once at startup.
-func (s *Server) Handler() http.Handler {
-	mux := http.NewServeMux()
-
+// RegisterRoutes wires every API + static handler onto the given mux.
+// Call once at startup. main.go owns the mux so it can also register
+// auth routes via api.InitAuth and apply auth/CSRF middleware on top.
+func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	// API.
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/version", s.handleVersion)
@@ -144,6 +174,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/subscriptions/{slug}/plan", s.handlePlanSubscription)
 	mux.HandleFunc("POST /api/subscriptions/{slug}/apply", s.handleApplySubscription)
 	mux.HandleFunc("POST /api/subscriptions/generate-key", s.handleGenerateKey)
+	mux.HandleFunc("POST /api/subscriptions/probe", s.handleProbeSubscription)
 	mux.HandleFunc("GET /api/instances/{id}/qui-rules", s.handleListQuiRules)
 
 	// Backup & Restore.
@@ -158,24 +189,33 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/repo/reset-to-remote", s.handleResetLocalToRemote)
 	mux.HandleFunc("PUT /api/config/git-remote", s.handleSetGitRemote)
 	mux.HandleFunc("GET /api/config/git-remote", s.handleGetGitRemote)
+	mux.HandleFunc("DELETE /api/config/git-remote", s.handleDeleteGitRemote)
 	mux.HandleFunc("PUT /api/config/qui", s.handleUpdateQuiConfig)
-	mux.HandleFunc("PUT /api/config/backup", s.handleUpdateBackupConfig)
+
+	// Backup schedules — full CRUD (replaces the v0.2 single PUT
+	// /api/config/backup). Each schedule is named, has its own cron,
+	// instance set, and retention.
+	mux.HandleFunc("GET /api/backup/schedules", s.handleListSchedules)
+	mux.HandleFunc("POST /api/backup/schedules", s.handleCreateSchedule)
+	mux.HandleFunc("PUT /api/backup/schedules/{id}", s.handleUpdateSchedule)
+	mux.HandleFunc("DELETE /api/backup/schedules/{id}", s.handleDeleteSchedule)
+	mux.HandleFunc("POST /api/backup/schedules/{id}/run", s.handleRunSchedule)
+	mux.HandleFunc("PUT /api/backup/gitignored", s.handleSetBackupGitignored)
 	mux.HandleFunc("GET /api/qui-instances", s.handleListQuiInstances)
 	mux.HandleFunc("POST /api/instances", s.handleAddInstance)
 	mux.HandleFunc("DELETE /api/instances/{id}", s.handleRemoveInstance)
 
-	// Static UI.
+	// Static UI. http.FileServer maps "/" to index.html, "/css/styles.css"
+	// to ui/static/css/styles.css, etc. — auth middleware allowlists the
+	// /css/, /js/, /icons/ prefixes so they serve pre-login.
 	mux.Handle("GET /", http.FileServer(http.FS(s.staticFS)))
-
-	// Apply middlewares in reverse so the first registered runs outermost.
-	var h http.Handler = mux
-	for i := len(s.middlewares) - 1; i >= 0; i-- {
-		h = s.middlewares[i](h)
-	}
-	return accessLog(h)
 }
 
-func accessLog(next http.Handler) http.Handler {
+// AccessLog wraps a handler with one-line-per-request logging. main.go
+// applies it as the innermost wrapper so auth/CSRF/security-headers
+// surround it; that way every request — including 401 redirects — is
+// logged exactly once.
+func AccessLog(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		sw := &statusWriter{ResponseWriter: w, code: 200}

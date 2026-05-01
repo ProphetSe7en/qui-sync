@@ -49,6 +49,63 @@ func gitLockFor(dir string) *sync.Mutex {
 	return m
 }
 
+// ValidateGitURL rejects URLs that fail a minimum sanity bar before
+// the value reaches `git`. Catches three classes of attack at a single
+// chokepoint:
+//
+//   - file:// or other non-network schemes that would let an admin
+//     read on-disk repos via the probe endpoint or subscription add
+//   - leading "-" which `git` would otherwise consume as a flag
+//     (fall-through belt to the "--" separator the call sites add)
+//   - misc bogus schemes that aren't actual transports
+//
+// Accepts: https, http, ssh, git, plus the SCP-style user@host:path
+// form (no scheme but everyone uses it for GitHub SSH). Reject anything
+// else loud and clear so a misconfigured URL gives a usable error.
+func ValidateGitURL(rawURL string) error {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return fmt.Errorf("url is required")
+	}
+	if strings.HasPrefix(s, "-") {
+		return fmt.Errorf("url cannot start with '-'")
+	}
+	// SCP-form SSH (git@host:path) — no scheme, host has user@ prefix
+	// and a ':' before any '/'. Common for GitHub SSH urls.
+	if !strings.Contains(s, "://") {
+		at := strings.Index(s, "@")
+		if at > 0 {
+			rest := s[at+1:]
+			if i := strings.Index(rest, ":"); i > 0 && i < strings.IndexAny(rest+"/", "/") {
+				return nil
+			}
+		}
+		return fmt.Errorf("url must use https://, ssh://, or git@host:path form")
+	}
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("invalid url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https", "http", "ssh", "git":
+		return nil
+	default:
+		return fmt.Errorf("unsupported url scheme %q (allowed: https, http, ssh, git, or git@host:path)", u.Scheme)
+	}
+}
+
+// SanitizeURLForDisplay strips userinfo (user:pass@) so a token-in-URL
+// doesn't leak through error messages or toasts. Lossy by design;
+// callers that need the original URL should keep their own copy.
+func SanitizeURLForDisplay(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.User == nil {
+		return rawURL
+	}
+	u.User = nil
+	return u.String()
+}
+
 // CloneSubscription clones a remote git repo into destDir at the given
 // branch. The directory must not already contain a git repo; use
 // FetchSubscription to update an existing clone.
@@ -73,7 +130,12 @@ func CloneSubscription(ctx context.Context, remoteURL, branch, destDir string, a
 	if branch != "" {
 		args = append(args, "--branch", branch)
 	}
-	args = append(args, effectiveURL, destDir)
+	// "--" separates options from positional args so a URL beginning
+	// with '-' (or a URL crafted to look like one) can't be consumed
+	// as a flag. Defense in depth — ValidateGitURL rejects leading '-'
+	// at the API boundary, but the separator removes the entire class
+	// of regression even if a future code path bypasses validation.
+	args = append(args, "--", effectiveURL, destDir)
 
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env = append(os.Environ(), env...)
@@ -121,7 +183,7 @@ func FetchSubscription(ctx context.Context, destDir, branch string, auth GitAuth
 	// passing the URL positionally is the reliable form and leaves
 	// .git/config untouched.
 	if _, err := runGit(ctx, destDir, env,
-		"fetch", "--depth", "1", effectiveURL, br); err != nil {
+		"fetch", "--depth", "1", "--", effectiveURL, br); err != nil {
 		return "", err
 	}
 	if _, err := runGit(ctx, destDir, env, "reset", "--hard", "FETCH_HEAD"); err != nil {
@@ -227,6 +289,24 @@ func SetupGitRepo(ctx context.Context, repoDir, remoteURL string) error {
 	return nil
 }
 
+// RemoveGitRemote removes the origin remote from a repo, leaving the
+// working tree and history intact. Idempotent — a repo with no
+// origin (or no .git at all) returns nil. Used by the "stop
+// publishing to GitHub" UI affordance, where the user wants to
+// disconnect without deleting their local exports.
+func RemoveGitRemote(ctx context.Context, repoDir string) error {
+	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
+		// No git repo, nothing to remove. Treat as success so the
+		// caller doesn't have to special-case "never configured".
+		return nil
+	}
+	// `git remote remove origin` errors if origin doesn't exist; use
+	// runGitSilent so the caller gets idempotent behaviour without
+	// special-casing the error string.
+	_ = runGitSilent(ctx, repoDir, nil, "remote", "remove", "origin")
+	return nil
+}
+
 // GetGitRemote returns the origin URL of the repo, or error if not configured.
 func GetGitRemote(ctx context.Context, repoDir string) (string, error) {
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
@@ -295,7 +375,7 @@ func GetRepoStatus(ctx context.Context, repoDir, token string) (*RepoStatus, err
 				if effectiveURL, env, err := prepareAuth(originURL, auth); err == nil {
 					// Force-update with `+` so a remote rebase/force-push is reflected.
 					refspec := "+" + status.Branch + ":refs/remotes/origin/" + status.Branch
-					_ = runGitSilent(ctx, repoDir, env, "fetch", effectiveURL, refspec)
+					_ = runGitSilent(ctx, repoDir, env, "fetch", "--", effectiveURL, refspec)
 				}
 			}
 		}
@@ -323,15 +403,13 @@ func GetRepoStatus(ctx context.Context, repoDir, token string) (*RepoStatus, err
 		status.LastCommitAt = strings.TrimSpace(out)
 	}
 
-	// Remote URL (strip embedded tokens)
+	// Remote URL — strip any embedded credentials before exposing to UI.
+	// We don't write user@host into the stored remote anymore (prepareAuth
+	// builds a per-call URL with credentials), but a hand-edited
+	// .git/config or a legacy install could still have one.
 	out, err = runGit(ctx, repoDir, nil, "config", "--get", "remote.origin.url")
 	if err == nil {
-		u := strings.TrimSpace(out)
-		if parsed, err := url.Parse(u); err == nil && parsed.User != nil {
-			parsed.User = nil
-			u = parsed.String()
-		}
-		status.RemoteURL = u
+		status.RemoteURL = SanitizeURLForDisplay(strings.TrimSpace(out))
 	}
 
 	return status, nil
@@ -370,7 +448,7 @@ func PullRepo(ctx context.Context, repoDir, token string) error {
 	// FETCH_HEAD so subsequent GetRepoStatus calls have a tracking ref
 	// to compute ahead/behind against.
 	refspec := "+" + branch + ":refs/remotes/origin/" + branch
-	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, refspec); err != nil {
+	if _, err := runGit(ctx, repoDir, env, "fetch", "--", effectiveURL, refspec); err != nil {
 		return fmt.Errorf("pull: %w", err)
 	}
 	if _, err := runGit(ctx, repoDir, nil, "merge", "--ff-only", "refs/remotes/origin/"+branch); err != nil {
@@ -423,7 +501,7 @@ func ResetLocalToRemote(ctx context.Context, repoDir, token string) error {
 	// FETCH_HEAD so the post-reset GetRepoStatus has a tracking ref
 	// for ahead/behind comparisons.
 	refspec := "+" + branch + ":refs/remotes/origin/" + branch
-	if _, err := runGit(ctx, repoDir, env, "fetch", effectiveURL, refspec); err != nil {
+	if _, err := runGit(ctx, repoDir, env, "fetch", "--", effectiveURL, refspec); err != nil {
 		return fmt.Errorf("fetch: %w", err)
 	}
 	if _, err := runGit(ctx, repoDir, nil, "reset", "--hard", "refs/remotes/origin/"+branch); err != nil {
@@ -476,7 +554,7 @@ func PushRepo(ctx context.Context, repoDir, token string) error {
 	// send anonymous requests in some git versions — the override does
 	// not always propagate to the HTTPS credential resolution. Passing
 	// the URL as a positional argument to git push is the reliable form.
-	_, err = runGit(ctx, repoDir, env, "push", effectiveURL, branch)
+	_, err = runGit(ctx, repoDir, env, "push", "--", effectiveURL, branch)
 	if err != nil {
 		return fmt.Errorf("push: %w", err)
 	}

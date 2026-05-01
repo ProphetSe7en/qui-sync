@@ -2,11 +2,21 @@
 // Kept intentionally small; real work lives in the API layer.
 
 function quiSyncApp() {
-  const boot = window.__QUI_SYNC_BOOTSTRAP__ || { tab: 'export', scale: 'default' };
+  // Tab values are 'backup', 'subscribe', 'publish', 'settings'. Pre-v0.3
+  // values 'sync' / 'export' are still in some users' localStorage; the
+  // migration in init() rewrites them to the new names so the UI doesn't
+  // open onto a dead tab the first time after upgrade.
+  const boot = window.__QUI_SYNC_BOOTSTRAP__ || { tab: 'backup', scale: 'default' };
   return {
     tab: boot.tab,
     scale: boot.scale,
     health: { status: 'idle', version: '' },
+    // authStatus tracks /api/auth/status. authenticated=true → topnav
+    // shows username + Logout. configured=true && authenticated=false
+    // → caller is reaching us via local-network bypass; topnav shows
+    // "Local" badge. Both false → first-run state, /setup wizard
+    // already redirected so we don't render auth chrome.
+    authStatus: { configured: false, authenticated: false, username: '', authentication: 'forms' },
     instances: [],
     expanded: {},          // instanceID -> bool
     rulesByInstance: {},   // instanceID -> [rule, ...]
@@ -34,7 +44,20 @@ function quiSyncApp() {
     // Settings tab — drafts live outside `config` so user can edit without
     // affecting the displayed config until Save is clicked.
     quiDraft: { url: '', apiKey: '' },
-    backupDraft: { cron: '0 3 * * *', enabled: false, retention_days: 90, keep_last_n: 0, gitignored: true },
+    // Backup tab — schedules CRUD + global gitignored toggle.
+    schedules: [],
+    backupGitignored: true,
+    runningSchedule: {},  // scheduleID -> bool while a Run-now request is in flight
+    scheduleModal: {
+      open: false,
+      editing: null,        // schedule.id when editing, null when adding
+      preset: 'custom',     // dropdown value; 'custom' = user-typed cron
+      saving: false,
+      cronHuman: '',
+      cronInvalid: false,
+      draft: { name: '', cron: '0 3 * * *', enabled: true, instances: [], retention_days: 90, keep_last_n: 7 },
+    },
+    historyModal: { open: false, scheduleId: '', scheduleName: '', entries: [] },
     addInstanceOpen: false,
     addInstanceDraft: { qui_instance_id: 0, category: '' },
     availableQuiInstances: [],
@@ -50,9 +73,16 @@ function quiSyncApp() {
     autoPullInterval: 'off',
     addSubOpen: false,
     addSubEditing: false, // true when the modal is editing an existing subscription
-    addSubDraft: { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '' },
+    addSubDraft: { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '', target_instance_id: 0 },
     addSubSSHKey: '', // non-empty after phase-1 generate; empty means phase-1 hasn't run yet
     addSubCategoryHints: [], // datalist options when editing — categories detected in the subscription's clone
+    // Probe state — populated when the user clicks "Look up what's in
+    // this repo" inside the Add modal. categories: [{name, rule_count}].
+    addSubProbing: false,
+    addSubProbeCategories: [],
+    addSubProbeTotal: 0,
+    addSubProbeError: '',
+    addSubOriginalURL: '',
     applyModal: { open: false, slug: '', instanceName: '', create: 0, update: 0, skip: 0 },
     hideDevBanner: localStorage.getItem('qui.hideDevBanner') === 'true',
     hideExportHelp: localStorage.getItem('qui.hideExportHelp') === 'true',
@@ -92,13 +122,25 @@ function quiSyncApp() {
     pullingRepo: false,
     pushTokenDraft: '',
     gitRemoteDraft: '',
+    repoDisplayNameDraft: '',  // optional friendly label, persisted in config.yml
     gitRemoteStatus: '',  // '' | 'ok' | 'none'
+    repoModal: { open: false, editing: false },
     testingQui: false,
     quiTestResult: '',  // '' | 'ok' | 'fail'
     quiTestError: '',
     loading: { instances: false, export: false, config: false, changelog: false },
 
     init() {
+      // Migrate pre-v0.3 tab names so a user with an old `qui.tab`
+      // localStorage value (sync / export) lands on a real tab instead
+      // of a blank section. Idempotent — fresh installs and migrated
+      // ones are both no-ops on the second call.
+      const tabRename = { sync: 'subscribe', export: 'publish' };
+      if (tabRename[this.tab]) {
+        this.tab = tabRename[this.tab];
+        localStorage.setItem('qui.tab', this.tab);
+      }
+      this.fetchAuthStatus();
       this.ping();
       this.loadInstances();
       this.loadConfig();
@@ -107,7 +149,30 @@ function quiSyncApp() {
       this.loadRepoStatus();
       this.loadGitRemote();
       this.loadBackups();
+      this.loadSchedules();
       setInterval(() => this.ping(), 30000);
+    },
+
+    // CSRF helper — reads quisync_csrf cookie set by the server on
+    // every GET. Used inside the logout <form>; AJAX fetches get the
+    // X-CSRF-Token header attached automatically by the api.js wrapper.
+    csrfToken() {
+      const m = document.cookie.match(/(?:^|; )quisync_csrf=([^;]+)/);
+      return m ? m[1] : '';
+    },
+
+    // fetchAuthStatus pulls the public /api/auth/status payload so the
+    // topnav can render username + Logout (when session-authenticated)
+    // or "Local" (when reaching us via Trusted-Networks bypass).
+    // Failure leaves authStatus at its zero-value — no auth chrome.
+    async fetchAuthStatus() {
+      try {
+        const resp = await fetch('/api/auth/status', { headers: { 'X-Skip-Login-Redirect': '1' } });
+        if (!resp.ok) return;
+        this.authStatus = await resp.json();
+      } catch (e) {
+        // Pre-setup or transient failure — leave defaults.
+      }
     },
 
     setTab(t) {
@@ -387,8 +452,10 @@ function quiSyncApp() {
       try {
         this.config = await this.apiFetch('/api/config');
         this.resetQuiDraft();
-        this.resetBackupDraft();
         this.resetAutoPullInterval();
+        if (typeof this.config.backup_gitignored === 'boolean') {
+          this.backupGitignored = this.config.backup_gitignored;
+        }
       } catch (e) {
         this.toast('error', 'Failed to load config: ' + e.message);
       } finally {
@@ -432,40 +499,335 @@ function quiSyncApp() {
       if (!this.config) return;
       this.quiDraft = { url: this.config.qui.url || '', apiKey: '' };
     },
-    resetBackupDraft() {
-      if (!this.config) return;
-      const b = this.config.backup || {};
-      this.backupDraft = {
-        cron: b.cron || '0 3 * * *',
-        enabled: !!b.enabled,
-        retention_days: b.retention_days || 0,
-        keep_last_n: b.keep_last_n || 0,
-        gitignored: !!b.gitignored,
+    // ---------- Backup schedules CRUD ----------
+    //
+    // Each schedule is an independent named cron rule. UI cards on the
+    // Backup tab call into these handlers; saveSchedule POSTs new ones
+    // or PUTs existing ones, deleteSchedule preserves on-disk backup
+    // folders (only the schedule definition disappears).
+
+    async loadSchedules() {
+      try {
+        const r = await fetch('/api/backup/schedules', { headers: { 'X-Skip-Login-Redirect': '1' } });
+        if (!r.ok) return;
+        const body = await r.json();
+        this.schedules = body.schedules || [];
+        this.backupGitignored = !!body.gitignored;
+      } catch (e) {
+        // Pre-setup or transient — leave schedules empty.
+      }
+    },
+
+    openAddScheduleModal() {
+      const all = this.instances.map(i => i.qui_instance_id);
+      this.scheduleModal = {
+        open: true,
+        editing: null,
+        preset: 'custom',
+        saving: false,
+        cronHuman: '',
+        cronInvalid: false,
+        // Empty instances on the draft = "all configured", same fall-
+        // back the backend uses. Pre-checking every instance would
+        // freeze that set in stone — if the user later adds a fourth
+        // instance the schedule wouldn't pick it up.
+        draft: { name: '', cron: '0 3 * * *', enabled: true, instances: [], retention_days: 90, keep_last_n: 7 },
+      };
+      this._refreshScheduleCronHelp();
+    },
+
+    openEditScheduleModal(sched) {
+      this.scheduleModal = {
+        open: true,
+        editing: sched.id,
+        preset: this._guessPresetForCron(sched.cron),
+        saving: false,
+        cronHuman: '',
+        cronInvalid: false,
+        draft: {
+          name: sched.name,
+          cron: sched.cron,
+          enabled: sched.enabled,
+          instances: Array.isArray(sched.instances) ? [...sched.instances] : [],
+          retention_days: sched.retention_days || 0,
+          keep_last_n: sched.keep_last_n || 0,
+        },
+      };
+      this._refreshScheduleCronHelp();
+    },
+
+    // applySchedulePreset picks a cron expression from the dropdown
+    // into the editable cron field. Choosing 'custom' leaves whatever
+    // the user typed; everything else overwrites — matches what
+    // people expect from "preset: pick one then tweak".
+    applySchedulePreset() {
+      if (this.scheduleModal.preset !== 'custom') {
+        this.scheduleModal.draft.cron = this.scheduleModal.preset;
+      }
+      this._refreshScheduleCronHelp();
+    },
+
+    // Watcher-equivalent — Alpine doesn't have $watch on plain props,
+    // so call this whenever cron or enabled changes. Keeps the helper
+    // line under the cron field in sync without server roundtrips.
+    _refreshScheduleCronHelp() {
+      const expr = (this.scheduleModal.draft.cron || '').trim();
+      const enabled = this.scheduleModal.draft.enabled;
+      if (!expr) {
+        this.scheduleModal.cronHuman = enabled ? 'Cron is required when enabled.' : 'No cron set — schedule paused.';
+        this.scheduleModal.cronInvalid = enabled;
+        return;
+      }
+      if (typeof cronstrue === 'undefined') {
+        this.scheduleModal.cronHuman = '';
+        this.scheduleModal.cronInvalid = false;
+        return;
+      }
+      try {
+        const desc = cronstrue.toString(expr, { use24HourTimeFormat: true });
+        this.scheduleModal.cronHuman = enabled ? desc : desc + ' · paused';
+        this.scheduleModal.cronInvalid = false;
+      } catch (e) {
+        this.scheduleModal.cronHuman = 'Invalid cron expression';
+        this.scheduleModal.cronInvalid = true;
+      }
+    },
+
+    _guessPresetForCron(cron) {
+      // The dropdown <option value> list mirrored here keeps the
+      // "preset → cron string" round-trip clean. If the saved cron
+      // matches one of the presets, the dropdown reflects that;
+      // otherwise show 'custom' so the user can edit freely.
+      const presets = ['@daily', '0 3 * * *', '0 22 * * *', '0 22 * * 1,5', '0 3 * * 0', '0 */6 * * *', '0 */12 * * *'];
+      return presets.includes(cron) ? cron : 'custom';
+    },
+
+    toggleScheduleInstance(instID) {
+      const arr = this.scheduleModal.draft.instances;
+      const i = arr.indexOf(instID);
+      if (i >= 0) arr.splice(i, 1);
+      else arr.push(instID);
+    },
+
+    async saveSchedule() {
+      this.scheduleModal.saving = true;
+      // Re-validate cron now in case the user typed in custom mode.
+      this._refreshScheduleCronHelp();
+      if (this.scheduleModal.draft.enabled && this.scheduleModal.cronInvalid) {
+        this.scheduleModal.saving = false;
+        this.toast('error', 'Cron expression is invalid');
+        return;
+      }
+      const isEdit = !!this.scheduleModal.editing;
+      const url = isEdit
+        ? `/api/backup/schedules/${encodeURIComponent(this.scheduleModal.editing)}`
+        : '/api/backup/schedules';
+      try {
+        await this.apiFetch(url, {
+          method: isEdit ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(this.scheduleModal.draft),
+        });
+        this.scheduleModal.open = false;
+        await this.loadSchedules();
+        this.toast('info', isEdit ? 'Schedule updated.' : 'Schedule added.');
+      } catch (e) {
+        this.toast('error', 'Save failed: ' + e.message);
+      } finally {
+        this.scheduleModal.saving = false;
+      }
+    },
+
+    async deleteSchedule(sched) {
+      const ok = await this.confirm({
+        title: 'Delete schedule?',
+        body: `This removes "${sched.name}" from the schedule list. Existing backup files on disk are kept — only the schedule itself disappears.`,
+        confirmLabel: 'Delete',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+      try {
+        await this.apiFetch(`/api/backup/schedules/${encodeURIComponent(sched.id)}`, { method: 'DELETE' });
+        await this.loadSchedules();
+        this.toast('info', 'Schedule deleted.');
+      } catch (e) {
+        this.toast('error', 'Delete failed: ' + e.message);
+      }
+    },
+
+    // isScheduleRunning is the bulletproof "is this schedule currently
+    // running?" check used by the Run-now button's :disabled binding.
+    // The plain `runningSchedule[sched.id]` form had a tester reporting
+    // a permanently-disabled (forbidden cursor) Run button on a fresh
+    // schedule — root cause unclear, but `=== true` removes any chance
+    // of an undefined / object-prototype name collision flipping the
+    // expression truthy.
+    isScheduleRunning(sched) {
+      return this.runningSchedule[sched.id] === true;
+    },
+
+    async runSchedule(sched) {
+      this.runningSchedule[sched.id] = true;
+      try {
+        // apiFetch already returns the parsed JSON body — calling
+        // .json() on it would throw TypeError. v0.3 carried that bug
+        // for one release; fix is just to consume body directly.
+        const body = await this.apiFetch(`/api/backup/schedules/${encodeURIComponent(sched.id)}/run`, { method: 'POST' });
+        if (body && body.failed > 0) {
+          this.toast('error', `Run done — ${body.ok} ok, ${body.failed} failed`);
+        } else {
+          const ok = (body && body.ok) || 0;
+          this.toast('info', `Run done — ${ok} instance${ok === 1 ? '' : 's'} backed up`);
+        }
+        await this.loadBackups();
+        await this.loadSchedules();
+      } catch (e) {
+        this.toast('error', 'Run failed: ' + e.message);
+      } finally {
+        this.runningSchedule[sched.id] = false;
+      }
+    },
+
+    // toggleSchedulePause flips a schedule between enabled/paused
+    // without opening the edit modal. Reuses the full-update endpoint
+    // so server-side validation runs as it would for any edit.
+    async toggleSchedulePause(sched) {
+      const next = !sched.enabled;
+      try {
+        await this.apiFetch(`/api/backup/schedules/${encodeURIComponent(sched.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: sched.name,
+            cron: sched.cron,
+            enabled: next,
+            instances: sched.instances || [],
+            retention_days: sched.retention_days || 0,
+            keep_last_n: sched.keep_last_n || 0,
+          }),
+        });
+        await this.loadSchedules();
+        this.toast('info', next ? 'Schedule resumed.' : 'Schedule paused.');
+      } catch (e) {
+        this.toast('error', 'Toggle failed: ' + e.message);
+      }
+    },
+
+    // openScheduleHistory loads backup folders for every instance the
+    // schedule covers, then shows them in a single sortable list. The
+    // backups belong to the instance, not the schedule — multiple
+    // schedules covering the same instance share folders. The modal
+    // header makes that clear so users don't expect strict ownership.
+    async openScheduleHistory(sched) {
+      const targets = (sched.resolved_instances && sched.resolved_instances.length)
+        ? sched.resolved_instances
+        : this.instances.map(i => i.qui_instance_id);
+      const instByID = {};
+      for (const inst of this.instances) {
+        instByID[inst.qui_instance_id] = inst.qui_name + ' (#' + inst.qui_instance_id + ')';
+      }
+      // /api/backups returns map[instanceID][]backups; flatten + sort.
+      let entries = [];
+      try {
+        const r = await fetch('/api/backups', { headers: { 'X-Skip-Login-Redirect': '1' } });
+        const body = await r.json();
+        for (const id of targets) {
+          const list = body[String(id)] || body[id] || [];
+          for (const bk of list) {
+            entries.push({
+              ...bk,
+              _instance_name: instByID[id] || ('#' + id),
+              _restoreTarget: id,
+            });
+          }
+        }
+        entries.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+      } catch (e) {
+        // fall through with empty list
+      }
+      this.historyModal = {
+        open: true,
+        scheduleId: sched.id,
+        scheduleName: sched.name,
+        entries,
       };
     },
 
-    // backupCronHuman converts the current cron draft into a readable
-    // sentence ("At 03:00, every day"). Uses cronstrue (vendored in
-    // Dockerfile) — client-side only, no server roundtrip on keystroke.
-    // When Enabled is off we gray the line out since the expression
-    // won't actually run; the text still updates so the user can see
-    // what would happen if they flipped Enabled on.
-    get backupCronHuman() {
-      const expr = (this.backupDraft.cron || '').trim();
-      if (!expr) return this.backupDraft.enabled ? 'Cron is required when Enabled is on.' : 'No cron set — schedule paused.';
-      if (typeof cronstrue === 'undefined') return '';
+    async saveBackupGitignored() {
       try {
-        const desc = cronstrue.toString(expr, { use24HourTimeFormat: true });
-        return this.backupDraft.enabled ? desc : desc + ' · paused';
+        await this.apiFetch('/api/backup/gitignored', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gitignored: this.backupGitignored }),
+        });
+        this.toast('info', this.backupGitignored ? 'Backups will be hidden from GitHub.' : 'Backups will be visible to GitHub.');
       } catch (e) {
-        return 'Invalid cron expression';
+        this.toast('error', 'Save failed: ' + e.message);
       }
     },
-    get backupCronInvalid() {
-      const expr = (this.backupDraft.cron || '').trim();
-      if (!expr) return this.backupDraft.enabled;
-      if (typeof cronstrue === 'undefined') return false;
-      try { cronstrue.toString(expr); return false; } catch { return true; }
+
+    // ---------- Schedule card display helpers ----------
+
+    describeScheduleInstances(sched) {
+      const list = sched.resolved_instances || [];
+      if (!list.length) return 'none';
+      // For 1-2 instances show names; beyond that show count + name
+      // count so the row doesn't grow too wide and stays aligned with
+      // the rest of the table.
+      if (!sched.instances || sched.instances.length === 0) {
+        return list.length === 1 ? this._instanceName(list[0]) : `all (${list.length})`;
+      }
+      if (list.length <= 2) {
+        return list.map(id => this._instanceName(id)).join(', ');
+      }
+      return `${list.length} selected`;
+    },
+
+    // describeScheduleInstanceList is the tooltip text — full list of
+    // instance names so hover gives the user the detail the compact
+    // cell hides.
+    describeScheduleInstanceList(sched) {
+      const list = sched.resolved_instances || [];
+      if (!list.length) return 'no instances';
+      return list.map(id => this._instanceName(id)).join(', ');
+    },
+
+    _instanceName(instID) {
+      const inst = this.instances.find(i => i.qui_instance_id === instID);
+      return inst ? inst.qui_name : ('#' + instID);
+    },
+
+    describeScheduleCron(sched) {
+      const expr = (sched.cron || '').trim();
+      if (!expr) return 'no schedule';
+      if (typeof cronstrue === 'undefined') return expr;
+      try {
+        const desc = cronstrue.toString(expr, { use24HourTimeFormat: true });
+        return sched.enabled ? desc : desc + ' (paused)';
+      } catch {
+        return expr + ' (invalid)';
+      }
+    },
+
+    // relativeTime turns an ISO timestamp into "in 2h", "in 4 days",
+    // "1 day ago" etc. for the next/last-run line. Missing inputs
+    // collapse to empty so the template's x-show binding hides the
+    // span. Uses Intl.RelativeTimeFormat for locale-correct output.
+    relativeTime(iso) {
+      if (!iso) return '';
+      const target = new Date(iso);
+      if (isNaN(target.getTime())) return '';
+      const diffMs = target.getTime() - Date.now();
+      const fmt = new Intl.RelativeTimeFormat(navigator.language || 'en', { numeric: 'auto' });
+      const abs = Math.abs(diffMs);
+      let value, unit;
+      if (abs < 60_000)        { value = Math.round(diffMs / 1000);              unit = 'second'; }
+      else if (abs < 3_600_000){ value = Math.round(diffMs / 60_000);            unit = 'minute'; }
+      else if (abs < 86_400_000){ value = Math.round(diffMs / 3_600_000);        unit = 'hour'; }
+      else if (abs < 2_592_000_000){ value = Math.round(diffMs / 86_400_000);    unit = 'day'; }
+      else if (abs < 31_536_000_000){ value = Math.round(diffMs / 2_592_000_000); unit = 'month'; }
+      else { value = Math.round(diffMs / 31_536_000_000); unit = 'year'; }
+      return fmt.format(value, unit);
     },
 
     async saveQuiConfig() {
@@ -488,19 +850,6 @@ function quiSyncApp() {
       }
     },
 
-    async saveBackupConfig() {
-      try {
-        await this.apiFetch('/api/config/backup', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(this.backupDraft),
-        });
-        await this.loadConfig();
-        this.toast('info', 'Backup settings saved.');
-      } catch (e) {
-        this.toast('error', 'Save failed: ' + e.message);
-      }
-    },
 
     async openAddInstanceModal() {
       this.addInstanceDraft = { qui_instance_id: 0, category: '' };
@@ -570,12 +919,23 @@ function quiSyncApp() {
 
     async restoreBackup(sourceInstanceID, bk) {
       const target = this.instances.find((i) => i.qui_instance_id === bk._restoreTarget);
+      const targetLabel = target ? target.qui_name : 'instance #' + bk._restoreTarget;
+      const isCrossInstance = bk._restoreTarget !== sourceInstanceID;
+      const sourceLabel = (() => {
+        const src = this.instances.find((i) => i.qui_instance_id === sourceInstanceID);
+        return src ? src.qui_name : 'instance #' + sourceInstanceID;
+      })();
+      const crossWarning = isCrossInstance
+        ? '⚠ Cross-instance restore — these rules were taken from ' + sourceLabel +
+          ' but will land in ' + targetLabel + '. This is a migration, not a same-instance recovery.\n\n'
+        : '';
       const ok = await this.confirm({
-        title: 'Restore backup?',
-        body: 'Restore ' + bk.rule_count + ' rules from backup ' + bk.timestamp +
-              ' to ' + (target ? target.qui_name : 'instance #' + bk._restoreTarget) +
-              '? Existing rules with matching names will be overwritten. New rules will be created.',
-        confirmLabel: 'Restore',
+        title: isCrossInstance ? 'Migrate backup to a different instance?' : 'Restore backup?',
+        body: crossWarning +
+              'Restore ' + bk.rule_count + ' rules from backup ' + bk.timestamp +
+              ' to ' + targetLabel +
+              '. Existing rules with matching names will be overwritten. New rules will be created.',
+        confirmLabel: isCrossInstance ? 'Migrate' : 'Restore',
       });
       if (!ok) return;
       this.restoringBackup = true;
@@ -621,13 +981,29 @@ function quiSyncApp() {
 
     toggleSub(slug) {
       this.expandedSub[slug] = !this.expandedSub[slug];
+      // Pre-fill the "Sync to" dropdown from the subscription's saved
+      // target_instance_id so the user doesn't pick the same instance
+      // every time they expand a row. selectedInstanceBySub is the
+      // local UI state; falling back to 0 keeps the placeholder option
+      // visible until the user makes a choice.
+      if (this.expandedSub[slug] && !this.selectedInstanceBySub[slug]) {
+        const sub = (this.subscriptions || []).find(s => s.slug === slug);
+        if (sub && sub.target_instance_id) {
+          this.selectedInstanceBySub[slug] = sub.target_instance_id;
+        }
+      }
     },
 
     openAddSubModal() {
-      this.addSubDraft = { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '' };
+      this.addSubDraft = { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '', target_instance_id: 0 };
       this.addSubSSHKey = '';
       this.addSubEditing = false;
       this.addSubCategoryHints = [];
+      // Reset the URL-change snapshot so a previous edit-mode open
+      // doesn't leak a "URL changed since save" warning into the next
+      // add-mode session.
+      this.addSubOriginalURL = '';
+      this._resetProbeState();
       this.addSubOpen = true;
     },
 
@@ -643,10 +1019,22 @@ function quiSyncApp() {
         auth_mode: sub.auth_mode || 'public',
         token: '',
         target_category: sub.target_category || '',
+        target_instance_id: sub.target_instance_id || 0,
       };
+      // Snapshot of the original URL so the modal can flag a URL
+      // change as destructive (the backend re-clones from scratch
+      // when the URL changes; this is correct, but it's worth a
+      // visible warning before the user clicks Save).
+      this.addSubOriginalURL = sub.url || '';
       this.addSubSSHKey = '';
       this.addSubEditing = true;
       this.addSubCategoryHints = Array.isArray(sub.repo_categories) ? sub.repo_categories : [];
+      // Pre-populate the probe categories from the existing clone so
+      // the user can pick from the same UI without re-probing.
+      this.addSubProbeCategories = (sub.repo_categories || []).map(name => ({ name, rule_count: 0 }));
+      this.addSubProbeTotal = sub.repo_rule_count || 0;
+      this.addSubProbeError = '';
+      this.addSubProbing = false;
       this.addSubOpen = true;
     },
 
@@ -654,6 +1042,49 @@ function quiSyncApp() {
       this.addSubOpen = false;
       this.addSubSSHKey = '';
       this.addSubEditing = false;
+      this._resetProbeState();
+    },
+
+    _resetProbeState() {
+      this.addSubProbing = false;
+      this.addSubProbeCategories = [];
+      this.addSubProbeTotal = 0;
+      this.addSubProbeError = '';
+    },
+
+    // probeSubscription does a lightweight clone via the backend so the
+    // Add modal can populate the category radio list with real options
+    // (and rule counts per category) instead of asking the user to type
+    // a folder name they may or may not remember.
+    async probeSubscription() {
+      const d = this.addSubDraft;
+      if (!d.url) return;
+      this.addSubProbing = true;
+      this.addSubProbeError = '';
+      try {
+        const body = await this.apiFetch('/api/subscriptions/probe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            slug: d.slug,
+            url: d.url,
+            branch: d.branch || 'main',
+            auth_mode: d.auth_mode,
+            token: d.token,
+          }),
+        });
+        this.addSubProbeCategories = (body && body.categories) || [];
+        this.addSubProbeTotal = (body && body.total) || 0;
+        if (this.addSubProbeCategories.length === 0) {
+          this.addSubProbeError = 'No categories with rule files found in this repo.';
+        }
+      } catch (e) {
+        this.addSubProbeError = e.message || 'Lookup failed';
+        this.addSubProbeCategories = [];
+        this.addSubProbeTotal = 0;
+      } finally {
+        this.addSubProbing = false;
+      }
     },
 
     // Button label reflects the current phase of the flow.
@@ -774,7 +1205,12 @@ function quiSyncApp() {
       if (!instanceId) return;
       this.loadingPlan[slug] = true;
       try {
-        // Load Qui rules for link-existing dropdown in parallel with plan.
+        // Force-reload the Qui-rules cache so a re-Plan after Apply
+        // sees the rules just created. loadQuiRulesFor early-returns
+        // when the cache is populated; without this delete the
+        // dropdown for newly-created rules would lack a "Link: ..."
+        // option until a manual page refresh.
+        delete this.quiRulesCache[instanceId];
         await this.loadQuiRulesFor(instanceId);
         const plan = await this.apiFetch('/api/subscriptions/' + slug + '/plan', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -820,8 +1256,21 @@ function quiSyncApp() {
       return plan.rules.filter((r) => r.category === cat);
     },
 
+    // toggleAutoSync handles two cases:
+    //   - already-applied rule (rule.from_state == true): hit the API
+    //     so the change takes effect immediately. Auto-sync uses the
+    //     stored flag the next time it pulls.
+    //   - new rule (rule.from_state == false): no state row yet, so
+    //     just stage the flag locally. The Apply request will carry
+    //     auto_sync: true and the backend persists it after creating
+    //     the link. Without this path the user couldn't tick Auto on a
+    //     fresh rule until they had Applied once and come back.
     async toggleAutoSync(slug, rule) {
       const autoSync = !rule.auto_sync;
+      if (!rule.from_state) {
+        rule.auto_sync = autoSync;
+        return;
+      }
       try {
         await this.apiFetch('/api/subscriptions/' + slug + '/rules/auto-sync', {
           method: 'PUT',
@@ -832,6 +1281,140 @@ function quiSyncApp() {
       } catch (e) {
         this.toast('error', 'Toggle auto-sync: ' + e.message);
       }
+    },
+
+    // bulkMatchByName re-runs name matching against the loaded Qui
+    // rules cache. For every plan rule currently set to create_new (or
+    // skip), look for a Qui rule with the exact same name; if found,
+    // switch the action to update_existing and link to it. Useful
+    // after the user has manually overridden some rows or added new
+    // rules in Qui since the last Plan.
+    async bulkMatchByName(slug) {
+      const plan = this.planBySub[slug];
+      if (!plan) return;
+      const instID = plan.qui_instance_id;
+      // Force a fresh cache load so the matcher sees rules added in Qui
+      // after the last Plan/dropdown render. Without this, "Match by
+      // name" silently no-ops when the cache is empty (e.g. a Qui
+      // instance that had 0 rules at Plan time but has rules now).
+      delete this.quiRulesCache[instID];
+      try {
+        await this.loadQuiRulesFor(instID);
+      } catch (e) {
+        this.toast('error', 'Match by name: failed to load Qui rules — ' + e.message);
+        return;
+      }
+      const cache = this.quiRulesCache[instID] || [];
+      if (cache.length === 0) {
+        this.toast('info', 'Match by name: this Qui instance has no automations to match against yet.');
+        return;
+      }
+      const liveByName = {};
+      const usedIDs = new Set();
+      for (const qr of cache) {
+        const k = (qr.name || '').trim().toLowerCase();
+        // Skip entries with no usable ID — would otherwise short-circuit
+        // the `if (liveID && ...)` truthy check downstream and silently
+        // hide a real match.
+        if (k && qr.qui_rule_id) liveByName[k] = qr.qui_rule_id;
+      }
+      // First pass: keep already-linked update_existing rows so we
+      // don't double-claim a Qui rule that's already pointed at.
+      for (const r of plan.rules) {
+        if (r.action === 'update_existing' && r.qui_rule_id) {
+          usedIDs.add(r.qui_rule_id);
+        }
+      }
+      let matched = 0;
+      let alreadyLinked = 0;
+      const traces = [];
+      for (const r of plan.rules) {
+        if (r.action === 'update_existing' && r.qui_rule_id) {
+          alreadyLinked++;
+          continue;
+        }
+        const key = (r.name || '').trim().toLowerCase();
+        const liveID = liveByName[key];
+        const inUsed = liveID ? usedIDs.has(liveID) : false;
+        traces.push({ name: r.name, key, liveID, inUsed, action: r.action, ruleID: r.qui_rule_id });
+        if (liveID && !inUsed) {
+          r.action = 'update_existing';
+          r.qui_rule_id = liveID;
+          // Mark as freshly auto-matched so the under-dropdown hint
+          // reads "auto-matched by name" instead of any stale state
+          // breadcrumb still attached to the row.
+          r.from_state = false;
+          r.link_suggestion = { match_type: 'name', qui_rule_id: liveID, confidence: 'medium' };
+          usedIDs.add(liveID);
+          matched++;
+        }
+      }
+      // Per-rule lookup trace — the side-by-side dump shows names but
+      // not the actual liveByName lookup result, which is the only way
+      // to spot "name is in both lists but lookup returned undefined"
+      // bugs (e.g. cache entry with qui_rule_id=0).
+      console.group('qui-sync Match-by-name: per-rule lookup');
+      console.log('liveByName keys (' + Object.keys(liveByName).length + '):', Object.keys(liveByName));
+      for (const t of traces) console.log('  →', t);
+      console.groupEnd();
+      if (matched > 0) {
+        this.toast('info', 'Matched ' + matched + ' rule' + (matched === 1 ? '' : 's') + ' by name.');
+      } else if (alreadyLinked === plan.rules.length) {
+        this.toast('info', 'All rules are already linked to a Qui rule.');
+      } else {
+        // Diagnostic dump — silent toasts hide WHY the match failed.
+        // Print both sides side-by-side to the console so the user can
+        // see exactly which character is different (trailing space,
+        // hyphen vs em-dash, smart-quote, etc.). The toast nudges them
+        // to open the console.
+        const repoNames = plan.rules
+          .filter(r => r.action !== 'update_existing' || !r.qui_rule_id)
+          .map(r => r.name || '');
+        const quiNames = cache.map(qr => qr.name || '');
+        console.group('qui-sync Match-by-name: no matches — diagnostic');
+        console.log('Repo rules (unmatched), normalised:');
+        for (const n of repoNames) console.log('  ', JSON.stringify(n.trim().toLowerCase()), '   raw:', JSON.stringify(n));
+        console.log('Qui rules in instance #' + instID + ', normalised:');
+        for (const n of quiNames) console.log('  ', JSON.stringify(n.trim().toLowerCase()), '   raw:', JSON.stringify(n));
+        const sharedHints = repoNames.filter(rn => {
+          const nrn = rn.trim().toLowerCase();
+          return quiNames.some(qn => {
+            const nqn = qn.trim().toLowerCase();
+            return nrn !== nqn && (nrn.includes(nqn) || nqn.includes(nrn));
+          });
+        });
+        if (sharedHints.length > 0) {
+          console.warn('Possible near-matches (one contains the other):', sharedHints);
+        }
+        console.groupEnd();
+        this.toast('info', 'No matches found — names differ between repo and Qui (' +
+          plan.rules.length + ' repo, ' + cache.length + ' Qui). Open the browser developer console for a side-by-side comparison if you want to investigate.', 12000);
+      }
+    },
+
+    // bulkSetAllCreateNew flips every plan rule (regardless of current
+    // action) to create_new. Useful when the auto-match guessed wrong
+    // links or when the user wants a clean slate before picking each
+    // row by hand. Skipped rows are NOT changed — Skip is its own
+    // explicit "leave this alone" decision.
+    bulkSetAllCreateNew(slug) {
+      const plan = this.planBySub[slug];
+      if (!plan) return;
+      let changed = 0;
+      for (const r of plan.rules) {
+        if (r.action === 'skip') continue;
+        if (r.action !== 'create_new' || r.qui_rule_id) {
+          r.action = 'create_new';
+          r.qui_rule_id = 0;
+          // Bulk-reset is an explicit user action; clear the auto-
+          // match / state breadcrumb so the source-hint reflects the
+          // new manual state.
+          r.from_state = false;
+          r.link_suggestion = { match_type: 'manual', confidence: 'high' };
+          changed++;
+        }
+      }
+      this.toast('info', changed === 0 ? 'Already all set to Create new.' : 'Reset ' + changed + ' rule' + (changed === 1 ? '' : 's') + ' to Create new.');
     },
 
     toggleRuleSkip(slug, rule) {
@@ -846,6 +1429,10 @@ function quiSyncApp() {
       } else {
         rule.action = 'skip';
       }
+      // Toggling Skip is an explicit decision — drop the auto-match
+      // breadcrumb so the source-hint reflects the new state.
+      rule.from_state = false;
+      rule.link_suggestion = { match_type: 'manual', confidence: 'high' };
     },
 
     setRulePriority(slug, rule, value) {
@@ -853,6 +1440,24 @@ function quiSyncApp() {
       if (isNaN(n)) return;
       rule.sort_order = n;
       rule.sort_order_from = 'override';
+    },
+
+    // describeMatchSource is the under-dropdown hint that tells the
+    // user where the current value came from. Three sources:
+    //   - state    → remembered from a previous Apply (highest trust,
+    //                rule.from_state is true)
+    //   - name     → server's auto-match by exact name on this Plan run
+    //   - slug     → server matched by slug (rare, future-proof)
+    //   - none     → no suggestion; will create new
+    // The state path is highlighted in blue; everything else stays in
+    // the muted text color so the row doesn't look busy.
+    describeMatchSource(rule) {
+      if (rule.from_state) return '✓ remembered from last apply';
+      const m = (rule.link_suggestion || {}).match_type;
+      if (m === 'name') return 'auto-matched by name';
+      if (m === 'slug') return 'auto-matched by slug';
+      if (m === 'manual') return 'manually picked';
+      return ''; // none / unmatched — keep row visually quieter
     },
 
     setRuleLink(slug, rule, value) {
@@ -865,6 +1470,14 @@ function quiSyncApp() {
         rule.action = 'update_existing';
         rule.qui_rule_id = parseInt(value.slice(2), 10);
       }
+      // User picked something explicitly — drop the "remembered from
+      // last apply" or "auto-matched by name" hint so the row doesn't
+      // mislead them into thinking the new value also came from one of
+      // those sources. The hint clears; on next Apply the new choice
+      // is what gets persisted, and on the Plan after that the row
+      // will read "remembered from last apply" again.
+      rule.from_state = false;
+      rule.link_suggestion = { match_type: 'manual', confidence: 'high' };
     },
 
     openApplyModal(slug) {
@@ -874,6 +1487,14 @@ function quiSyncApp() {
       const counts = { create_new: 0, update_existing: 0, skip: 0 };
       for (const r of visible) counts[r.action] = (counts[r.action] || 0) + 1;
       const inst = this.instances.find((i) => i.qui_instance_id === plan.qui_instance_id);
+      // Apply only sends the visible (filtered) rules. If a category
+      // filter is active, surface the implication so the user can't be
+      // surprised that rules in other categories aren't being applied
+      // this round. The "missing" rules are still in the plan; the
+      // user can clear the filter and re-Apply to cover them.
+      const totalRules = (plan.rules || []).length;
+      const filterActive = !!this.planCategoryFilter[slug];
+      const filterCategory = this.planCategoryFilter[slug] || '';
       this.applyModal = {
         open: true,
         slug,
@@ -881,6 +1502,10 @@ function quiSyncApp() {
         create: counts.create_new,
         update: counts.update_existing,
         skip: counts.skip,
+        filterActive,
+        filterCategory,
+        visibleCount: visible.length,
+        totalCount: totalRules,
       };
     },
 
@@ -897,6 +1522,7 @@ function quiSyncApp() {
           action: r.action,
           qui_rule_id: r.action === 'update_existing' ? r.qui_rule_id : 0,
           sort_order_override: r.sort_order_from === 'override' ? r.sort_order : null,
+          auto_sync: !!r.auto_sync,
         }));
         const result = await this.apiFetch('/api/subscriptions/' + slug + '/apply', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1073,8 +1699,8 @@ function quiSyncApp() {
     async applyToQui() {
       try {
         await this.apiFetch('/api/repo/apply-to-qui', { method: 'POST' });
-        this.toast('info', 'Local repo linked. Switch to the Sync tab → expand "__local__" → select instance → Plan → Apply.');
-        this.setTab('sync');
+        this.toast('info', 'Local repo linked. Switch to the Subscribe tab → expand "__local__" → select instance → Plan → Apply.');
+        this.setTab('subscribe');
         await this.loadSubscriptions();
       } catch (e) {
         this.toast('error', 'Apply setup failed: ' + e.message);
@@ -1141,6 +1767,7 @@ function quiSyncApp() {
         const r = await this.apiFetch('/api/config/git-remote');
         this.gitRemoteStatus = r.configured ? 'ok' : 'none';
         if (r.url) this.gitRemoteDraft = r.url;
+        this.repoDisplayNameDraft = r.display_name || '';
       } catch (_) {
         this.gitRemoteStatus = 'none';
       }
@@ -1152,7 +1779,10 @@ function quiSyncApp() {
           await this.apiFetch('/api/config/git-remote', {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: this.gitRemoteDraft }),
+            body: JSON.stringify({
+              url: this.gitRemoteDraft,
+              display_name: this.repoDisplayNameDraft || '',
+            }),
           });
         }
         if (this.pushTokenDraft) {
@@ -1169,6 +1799,80 @@ function quiSyncApp() {
       } catch (e) {
         this.toast('error', 'Save failed: ' + e.message);
       }
+    },
+
+    // openRepoModal opens the Set-up / Edit repository modal. In edit
+    // mode the URL pre-fills from the saved value and the token field
+    // is left blank ("leave blank to keep saved token" placeholder).
+    // First-time setup leaves both blank so the user starts fresh.
+    openRepoModal() {
+      this.repoModal = {
+        open: true,
+        editing: this.gitRemoteStatus === 'ok',
+      };
+      // Token field always starts empty in the modal — saving with
+      // empty token preserves the existing one (matched by saveGitConfig).
+      this.pushTokenDraft = '';
+    },
+
+    // saveRepoFromModal wraps saveGitConfig so the modal can show its
+    // own validation/save toasts and close on success. Splits the
+    // visible save button from the underlying multi-step save (URL +
+    // token both go through one click).
+    async saveRepoFromModal() {
+      if (!this.gitRemoteDraft) return;
+      await this.saveGitConfig();
+      this.repoModal.open = false;
+      // Auto-validate the (newly) saved token so the card immediately
+      // shows ✓ or × instead of the neutral "click validate" hint.
+      // Skip when in edit mode and the user didn't supply a fresh
+      // token — the saved one was already validated previously.
+      this.validateStoredPushToken();
+    },
+
+    // deleteRepoConfig disconnects the saved repository: server clears
+    // the git remote + deletes the token file, then the UI reloads.
+    // Local repo files (exported rules, .git, history) stay on disk —
+    // re-adding the URL reconnects without losing anything.
+    async deleteRepoConfig() {
+      const ok = await this.confirm({
+        title: 'Disconnect repository?',
+        body: 'Removes the GitHub link + saved token. Your local exports and git history stay intact — re-add the URL to reconnect later.',
+        confirmLabel: 'Disconnect',
+      });
+      if (!ok) return;
+      try {
+        await this.apiFetch('/api/config/git-remote', { method: 'DELETE' });
+        this.gitRemoteDraft = '';
+        this.repoDisplayNameDraft = '';
+        this.pushTokenDraft = '';
+        this.pushTokenValidated = '';
+        this.pushTokenValidateError = '';
+        this.gitRemoteStatus = 'none';
+        await this.loadGitRemote();
+        this.toast('info', 'Repository disconnected.');
+      } catch (e) {
+        this.toast('error', 'Disconnect failed: ' + e.message);
+      }
+    },
+
+    // repoDisplayName derives a friendly label from the URL — last
+    // path segment minus the .git suffix. Avoids forcing the user to
+    // type a name when most repos already have a clear identity in
+    // their URL (github.com/me/qui-automations.git → "qui-automations").
+    repoDisplayName() {
+      // User-provided friendly label wins over URL-derived. Empty
+      // string falls through to the URL derivation so a fresh-from-
+      // setup repo still gets a sensible label without forcing the
+      // user to type one.
+      const explicit = (this.repoDisplayNameDraft || '').trim();
+      if (explicit) return explicit;
+      const url = (this.gitRemoteDraft || '').trim();
+      if (!url) return 'Repository';
+      let s = url.replace(/\/+$/, '').replace(/\.git$/, '');
+      const i = Math.max(s.lastIndexOf('/'), s.lastIndexOf(':'));
+      if (i >= 0) s = s.slice(i + 1);
+      return s || url;
     },
 
     async savePushToken() {

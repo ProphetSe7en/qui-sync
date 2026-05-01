@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prophetse7en/qui-sync/core"
+	"github.com/prophetse7en/qui-sync/internal/core"
 )
 
 // Category names: lowercase letters, digits, hyphens, underscores.
@@ -41,15 +41,12 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 			"api_key_source":   keySource(cfg),
 			"api_key_filename": keyFileName,
 		},
-		"export_instances": cfg.ExportInstances,
-		"strip_fields":     cfg.StripFields,
-		"backup": map[string]any{
-			"cron":           cfg.Backup.Cron,
-			"enabled":        cfg.Backup.Enabled,
-			"retention_days": cfg.Backup.RetentionDays,
-			"keep_last_n":    cfg.Backup.KeepLastN,
-			"gitignored":     cfg.Backup.Gitignored,
-		},
+		"export_instances":   cfg.ExportInstances,
+		"strip_fields":       cfg.StripFields,
+		"backup_schedules":   cfg.BackupSchedules,
+		"backup_gitignored":  cfg.BackupGitignored,
+		"auto_pull_interval": cfg.AutoPullInterval,
+		"repo_display_name":  cfg.RepoDisplayName,
 	}
 	writeJSON(w, 200, out)
 }
@@ -264,6 +261,8 @@ func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
 	cfg := s.getConfig()
 	newCfg := *cfg
 	newCfg.Qui.URL = req.URL
@@ -283,58 +282,6 @@ func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
 		newCfg.Qui.APIKey = "" // ensure inline key never leaks into config
 	}
 
-	if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
-		writeErr(w, 500, err)
-		return
-	}
-	s.mu.Lock()
-	s.cfg = &newCfg
-	s.mu.Unlock()
-	writeJSON(w, 200, map[string]string{"status": "ok"})
-}
-
-// ---- Backup config edit ----
-
-type backupConfigReq struct {
-	Cron          string `json:"cron"`
-	Enabled       bool   `json:"enabled"`
-	RetentionDays int    `json:"retention_days"`
-	KeepLastN     int    `json:"keep_last_n"`
-	Gitignored    bool   `json:"gitignored"`
-}
-
-func (s *Server) handleUpdateBackupConfig(w http.ResponseWriter, r *http.Request) {
-	var req backupConfigReq
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512)).Decode(&req); err != nil {
-		writeErr(w, 400, err)
-		return
-	}
-	if req.RetentionDays < 0 || req.RetentionDays > 3650 {
-		writeErr(w, 400, fmt.Errorf("retention_days must be 0-3650"))
-		return
-	}
-	if req.KeepLastN < 0 || req.KeepLastN > 10000 {
-		writeErr(w, 400, fmt.Errorf("keep_last_n must be 0-10000"))
-		return
-	}
-	// Cron validation only when enabled — an empty/invalid cron with
-	// the schedule off is a legitimate "I haven't configured it yet"
-	// state, not an error. When enabled is true, the cron must parse
-	// so the scheduler actually has something to fire on.
-	cronExpr := strings.TrimSpace(req.Cron)
-	if req.Enabled {
-		if _, err := core.ParseBackupCron(cronExpr); err != nil {
-			writeErr(w, 400, fmt.Errorf("cron is required when enabled: %w", err))
-			return
-		}
-	}
-	cfg := s.getConfig()
-	newCfg := *cfg
-	newCfg.Backup.Cron = cronExpr
-	newCfg.Backup.Enabled = req.Enabled
-	newCfg.Backup.RetentionDays = req.RetentionDays
-	newCfg.Backup.KeepLastN = req.KeepLastN
-	newCfg.Backup.Gitignored = req.Gitignored
 	if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -400,6 +347,8 @@ func (s *Server) handleAddInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
 	cfg := s.getConfig()
 	for _, inst := range cfg.ExportInstances {
 		if inst.QuiInstanceID == req.QuiInstanceID {
@@ -435,6 +384,8 @@ func (s *Server) handleRemoveInstance(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("invalid instance id %q", idStr))
 		return
 	}
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
 	cfg := s.getConfig()
 	idx := -1
 	for i, inst := range cfg.ExportInstances {
@@ -489,6 +440,8 @@ func (s *Server) handleRenameCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
 	cfg := s.getConfig()
 
 	// Find the target instance in config and check for collisions.
@@ -963,7 +916,7 @@ func (s *Server) handleApplyToQui(w http.ResponseWriter, r *http.Request) {
 	// Ensure a __local__ subscription exists pointing at the repo dir.
 	const localSlug = "__local__"
 	if state.SubscriptionSnapshot(localSlug) == nil {
-		_ = state.AddSubscription(localSlug, repoDir, "HEAD", core.SubscriptionAuth{Mode: core.GitAuthPublic}, "")
+		_ = state.AddSubscription(localSlug, repoDir, "HEAD", core.SubscriptionAuth{Mode: core.GitAuthPublic}, "", 0)
 		_ = state.Save(cfg.Paths().State)
 	}
 

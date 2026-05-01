@@ -4,30 +4,47 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>qui-sync</title>
-  <link rel="stylesheet" href="design-tokens.css">
-  <!-- Load order matters: app.js defines quiSyncApp() which Alpine evaluates
-       via x-data="quiSyncApp()" on body. If alpine loads first, the function
-       is still undefined and all x-show sections render blank. -->
+  <link rel="stylesheet" href="/css/styles.css">
+  <!-- Load order matters: api.js wraps fetch with CSRF + 401 redirect, must
+       be earliest. app.js defines quiSyncApp() which Alpine evaluates via
+       x-data="quiSyncApp()" on body — must load before alpine. -->
   <!-- cronstrue turns "0 3 * * *" into "At 03:00, every day" client-side so
        the Backup settings can show live translations without a server
        roundtrip on every keystroke. Vendored in Dockerfile (no runtime CDN). -->
-  <script defer src="cronstrue.min.js"></script>
-  <script defer src="app.js"></script>
-  <script defer src="alpine.min.js"></script>
+  <script src="/js/api.js"></script>
+  <script defer src="/js/cronstrue.min.js"></script>
+  <script defer src="/js/app.js"></script>
+  <script defer src="/js/alpine.min.js"></script>
 </head>
 <body x-data="quiSyncApp()" :data-scale="scale">
 
 <nav class="topnav">
   <div class="logo">qui-sync</div>
   <div class="tabs">
-    <div class="tab" :class="tab==='export'   && 'active'" @click="setTab('export')">Export</div>
-    <div class="tab" :class="tab==='sync'     && 'active'" @click="setTab('sync')">Sync</div>
-    <div class="tab" :class="tab==='backup'   && 'active'" @click="setTab('backup')">Backup</div>
-    <div class="tab" :class="tab==='settings' && 'active'" @click="setTab('settings')">Settings</div>
+    <div class="tab" :class="tab==='backup'    && 'active'" @click="setTab('backup')">Backup</div>
+    <div class="tab" :class="tab==='subscribe' && 'active'" @click="setTab('subscribe')">Subscribe</div>
+    <div class="tab" :class="tab==='publish'   && 'active'" @click="setTab('publish')">Publish</div>
+    <div class="tab" :class="tab==='settings'  && 'active'" @click="setTab('settings')">Settings</div>
   </div>
   <div class="right">
     <span x-show="health.status==='ok'"><span class="dot dot-ok"></span>v<span x-text="health.version"></span></span>
     <span x-show="health.status==='err'"><span class="dot dot-err"></span>offline</span>
+    <!-- Username + Logout when authenticated; "Local" badge when reaching
+         via Trusted-Networks bypass; nothing in auth=none mode. -->
+    <template x-if="authStatus.authenticated">
+      <div style="display:flex;align-items:center;gap:8px;margin-left:12px">
+        <span x-text="authStatus.username" :title="'Logged in as ' + authStatus.username"
+              style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:var(--font-sm);color:var(--text-secondary)"></span>
+        <form method="POST" action="/logout" style="margin:0">
+          <input type="hidden" name="csrf_token" :value="csrfToken()">
+          <button type="submit" class="btn btn-sm" title="Log out">Logout</button>
+        </form>
+      </div>
+    </template>
+    <template x-if="!authStatus.authenticated && authStatus.configured">
+      <span style="background:#1a2f45;color:#58a6ff;padding:3px 8px;border-radius:10px;font-size:var(--font-xs);font-weight:500;letter-spacing:0.3px;border:1px solid #1f3b5a;margin-left:12px"
+            title="Local network — authentication bypassed for this network">Local</span>
+    </template>
   </div>
 </nav>
 
@@ -38,19 +55,19 @@
 
 <main class="container">
 
-  <!-- EXPORT TAB -->
-  <section x-show="tab==='export'">
-    <h1 class="page-title">Export</h1>
-    <p class="page-subtitle">Pull automations from your Qui instances and save them as versioned JSON files in your share-repo. Other users can subscribe to this repo via the Sync tab to import your rules.</p>
+  <!-- PUBLISH TAB -->
+  <section x-show="tab==='publish'">
+    <h1 class="page-title">Publish</h1>
+    <p class="page-subtitle">Publish your Qui automations as a shareable collection. Push to GitHub so others can subscribe to your setup.</p>
 
     <div class="panel help-panel" x-show="!hideExportHelp">
       <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
         <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
           <b>How it works:</b>
-          <b>1.</b> Expand an instance below to see its rules — exclude any you don't want to share.
-          <b>2.</b> Set the priority (sort order) for each rule — this is the order consumers will get them in.
-          <b>3.</b> Click <b>Preview</b> to see what would change, then <b>Commit export</b> to write files + auto-commit to git.
-          <b>4.</b> Use the Share-repo panel below to push to GitHub.
+          <b>1.</b> Set the GitHub repository where your rules will live (top panel).
+          <b>2.</b> Add the Qui instances you want to share rules from. Expand any to fine-tune which rules get included.
+          <b>3.</b> Click <b>Preview</b> to see what would change, then <b>Commit export</b> to write files + auto-commit.
+          <b>4.</b> Use <b>Push to GitHub</b> to publish.
           <br><br>
           <b>Safe for sharing:</b> Your personal tracker lists are automatically replaced with placeholders. Rules using <code>*</code> (all trackers) keep the wildcard. Fields like <code>enabled</code>, <code>dryRun</code>, and <code>notify</code> are stripped — consumers set those themselves.
         </div>
@@ -58,14 +75,113 @@
       </div>
     </div>
 
+    <!-- Where to publish — compact card. Empty state shows a single
+         "Set up" button; configured state shows a one-line summary
+         with action icons. Editing happens in a modal so the panel
+         doesn't dominate the tab when the user has finished setting
+         it up and just wants to look at instances + push status. -->
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">Instances</div>
+        <div class="panel-title">Where to publish</div>
+        <button class="btn btn-primary" @click="openRepoModal()"
+                x-show="gitRemoteStatus !== 'ok'">+ Set up repository</button>
+      </div>
+      <div class="panel-body" x-show="gitRemoteStatus !== 'ok'" style="padding:12px 16px">
+        <p class="dim" style="font-size:var(--font-sm); margin:0">
+          Connect a GitHub repository to publish your exported rules. Click <b>Set up repository</b> to begin.
+          qui-sync uses one repository for all your published instances; per-instance overrides are planned for a future release.
+        </p>
+      </div>
+      <div class="panel-body" x-show="gitRemoteStatus === 'ok'" style="padding:0">
+        <div style="display:flex; align-items:center; gap:14px; padding:12px 16px">
+          <div style="flex:1; min-width:0">
+            <div style="font-weight:500" x-text="repoDisplayName()"></div>
+            <div class="dim" style="font-size:var(--font-xs); font-family:var(--font-mono); overflow:hidden; text-overflow:ellipsis; white-space:nowrap"
+                 :title="gitRemoteDraft"
+                 x-text="gitRemoteDraft"></div>
+            <div style="font-size:var(--font-xs); margin-top:2px"
+                 :style="pushTokenValidated
+                   ? 'color:var(--accent-green)'
+                   : (pushTokenValidateError ? 'color:var(--text-err)' : 'color:var(--text-secondary)')">
+              <span x-show="pushTokenValidating">Validating…</span>
+              <span x-show="!pushTokenValidating && pushTokenValidated"
+                    x-text="'● Token valid (' + pushTokenValidated + ')'"></span>
+              <span x-show="!pushTokenValidating && pushTokenValidateError"
+                    x-text="'● ' + pushTokenValidateError"></span>
+              <span x-show="!pushTokenValidating && !pushTokenValidated && !pushTokenValidateError"
+                    class="dim">Click validate to re-check the saved token</span>
+            </div>
+          </div>
+          <span style="display:flex; gap:4px">
+            <button class="icon-btn" @click="validateStoredPushToken()"
+                    :disabled="pushTokenValidating"
+                    title="Validate the saved token against GitHub">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3 8l3 3 7-7"/>
+              </svg>
+            </button>
+            <button class="icon-btn" @click="openRepoModal()" title="Edit repository">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z M10 3l3 3"/>
+              </svg>
+            </button>
+            <button class="icon-btn icon-btn-danger" @click="deleteRepoConfig()"
+                    title="Disconnect this repository (local exports are kept)">
+              <svg viewBox="0 0 16 16" aria-hidden="true">
+                <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3 4h10 M5.5 4V2.5h5V4 M4.5 4l1 9.5h5l1-9.5 M6.5 6.5v5 M9.5 6.5v5"/>
+              </svg>
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Set-up / Edit repository modal. Reuses the existing
+         saveGitConfig + validateStoredPushToken handlers — just wraps
+         them in a focused two-field surface. -->
+    <div class="modal-backdrop" x-show="repoModal.open" @keydown.escape.window="repoModal.open = false"
+         x-transition.opacity style="display:none">
+      <div class="modal" @click.stop style="width:560px">
+        <div class="modal-title" x-text="repoModal.editing ? 'Edit repository' : 'Set up repository'"></div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label>Display name</label>
+            <input class="input" x-model="repoDisplayNameDraft"
+                   placeholder="Friendly label (optional — derived from URL otherwise)"
+                   autocomplete="off" spellcheck="false">
+
+            <label>Repository URL</label>
+            <input class="input" x-model="gitRemoteDraft"
+                   placeholder="https://github.com/you/qui-automations.git"
+                   autocomplete="off" spellcheck="false">
+
+            <label>Access token</label>
+            <input class="input" type="password" x-model="pushTokenDraft"
+                   :placeholder="repoModal.editing ? 'Leave blank to keep the saved token' : 'GitHub fine-grained personal access token'"
+                   autocomplete="new-password" data-1p-ignore data-lpignore="true">
+          </div>
+          <p class="dim" style="font-size:var(--font-xs); margin-top:10px; line-height:1.5">
+            Create a <b>fine-grained PAT</b> on GitHub with <b>Contents: Read+Write</b> permission scoped to this repository.
+            qui-sync stores the token at <code>/config/git-push-token</code> with mode 0600.
+          </p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" @click="repoModal.open = false">Cancel</button>
+          <button class="btn btn-primary" @click="saveRepoFromModal()"
+                  :disabled="!gitRemoteDraft">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Published instances</div>
+        <button class="btn btn-primary" @click="openAddInstanceModal()">+ Add instance</button>
         <button class="btn" @click="loadInstances()" :disabled="loading.instances">Refresh</button>
       </div>
       <div class="panel-body" style="padding:0">
         <template x-if="instances.length === 0 && !loading.instances">
-          <div class="empty">No instances configured. Check Settings.</div>
+          <div class="empty">No instances added yet — click <b>+ Add instance</b> above.</div>
         </template>
         <template x-if="loading.instances">
           <div class="empty dim">Loading…</div>
@@ -132,6 +248,9 @@
                 <button class="btn btn-sm" style="margin-left:12px"
                         @click.stop="toggleInstanceExclude(i)"
                         x-text="i.excluded ? 'Include instance' : 'Exclude instance'"></button>
+                <button class="btn btn-sm btn-danger" style="margin-left:6px"
+                        @click.stop="removeInstance(i)"
+                        title="Remove this instance from the published list. On-disk files and exclusion state are kept — re-adding resumes where you left off.">Remove</button>
               </span>
             </div>
 
@@ -209,7 +328,7 @@
                 title="Show what would change without writing anything. Safe to run anytime.">Preview</button>
         <button class="btn btn-primary" @click="runExport()"
                 :disabled="loading.export"
-                title="Write changes to disk and auto-commit to git. Your share-repo is updated and ready for Pull/Sync.">Commit export</button>
+                title="Write changes to disk and auto-commit to git. Your share-repo is updated and ready for subscribers to pull.">Commit export</button>
       </div>
       <div class="panel-body">
         <!-- Free-form note that goes into today's CHANGELOG.md entry.
@@ -337,7 +456,7 @@
 
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">Share-repo</div>
+        <div class="panel-title">Push to GitHub</div>
         <button class="btn" @click="loadRepoStatus()" :disabled="loadingRepoStatus">Refresh</button>
       </div>
       <div class="panel-body">
@@ -378,9 +497,8 @@
                       title="Apply local file changes (from PRs, edits) back into Qui. Uses the same merge that preserves your trackers.">
                 Apply to Qui
               </button>
-              <button class="btn" @click="resetLocalToRemote()"
+              <button class="btn btn-danger" @click="resetLocalToRemote()"
                       :disabled="!repoStatus.status.remote_url || resettingRepo"
-                      style="border-color:var(--accent-red); color:var(--accent-red)"
                       title="Replace /data/repo with an exact copy of the remote branch. Destructive — discards local commits not on the remote. Use when Pull refuses with 'unrelated histories' or 'non-fast-forward', or to forcibly restart from the remote state. Your Qui instance is not touched.">
                 <span x-show="!resettingRepo">Reset local to remote</span>
                 <span x-show="resettingRepo">Resetting…</span>
@@ -585,30 +703,122 @@
 
   <!-- BACKUP TAB -->
   <section x-show="tab==='backup'">
-    <h1 class="page-title">Backup & Restore</h1>
-    <p class="page-subtitle">Full 1:1 backup of all automations per Qui instance — including trackers, enabled state, and everything else. No stripping, no placeholders.</p>
+    <h1 class="page-title">Backup &amp; Restore</h1>
+    <p class="page-subtitle">Full 1:1 snapshots of every automation in a Qui instance — trackers, enabled state, and everything else are preserved. Restore to the same instance or migrate to a different one.</p>
+
+    <!-- Setup-needed banner — same shape as the Settings tab so users
+         landing on the default Backup tab see immediately when Qui
+         isn't connected. Backups can't run without a working Qui
+         client (CreateBackup hits ListAutomations on every fire). -->
+    <div class="panel" style="border-color:var(--accent-amber)"
+         x-show="config && config.qui && !config.qui.api_key_present">
+      <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber); display:flex; align-items:center; gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:200px"><b>Setup needed</b> — connect to Qui first. Backups won't run until Qui is reachable.</div>
+        <button class="btn btn-sm" @click="setTab('settings')">Open Settings</button>
+      </div>
+    </div>
 
     <div class="panel help-panel" x-show="!hideBackupHelp">
       <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
         <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
-          <b>How it works:</b>
-          <b>1.</b> Click <b>Backup now</b> on an instance to snapshot all its automations.
-          <b>2.</b> Backups are stored per instance with timestamp — each is a complete snapshot.
-          <b>3.</b> To restore, expand the instance, select a backup, choose the target instance, and click <b>Restore</b>.
-          <b>4.</b> Restore creates the rules in Qui exactly as they were — trackers, enabled state, intervals, everything.
+          Backups protect your Qui automations so you can recover if something goes wrong.
+          <br><br>
+          <b>Schedules</b> — set up once, run on their own. Give it a name, choose which instances to back up, and how often (every day at 03:00, twice a week, every 6 hours, etc.). Each fire makes a complete snapshot.
+          <br>
+          <b>Manual backup</b> — snapshot one instance right now. Useful before a risky change.
+          <br><br>
+          <b>Restore</b> works the same way in both cases: open <b>History</b> on a schedule, or expand an instance under <b>Manual backup</b>, then click <b>Restore</b> on the snapshot you want. Pick which Qui instance it lands in (originally backed up from, or a different one to migrate).
         </div>
         <button class="btn btn-sm" @click="dismissBackupHelp()" title="Hide this help">✕</button>
       </div>
     </div>
 
+    <!-- Schedules — primary surface for unattended backups. -->
     <div class="panel">
       <div class="panel-header">
-        <div class="panel-title">Instances</div>
+        <div class="panel-title">Schedules</div>
+        <button class="btn btn-primary" @click="openAddScheduleModal()">+ Add schedule</button>
+      </div>
+      <div class="panel-body" style="padding:0">
+        <template x-if="!schedules || schedules.length === 0">
+          <div class="empty">No schedules yet. Click <b>Add schedule</b> to set up a recurring backup.</div>
+        </template>
+        <template x-if="schedules && schedules.length > 0">
+          <div class="schedule-list">
+            <div class="schedule-row schedule-header">
+              <span>Name</span>
+              <span>Schedule</span>
+              <span>Instances</span>
+              <span>Last run</span>
+              <span>Next run</span>
+              <span>Retention</span>
+              <span>Status</span>
+              <span class="schedule-actions"></span>
+            </div>
+            <template x-for="sched in schedules" :key="sched.id">
+              <div class="schedule-row">
+                <span style="font-weight:500" x-text="sched.name"></span>
+                <span x-text="describeScheduleCron(sched)"></span>
+                <span :title="describeScheduleInstanceList(sched)" x-text="describeScheduleInstances(sched)"></span>
+                <span class="dim" x-text="sched.last_run_at ? relativeTime(sched.last_run_at) : '—'"></span>
+                <span class="dim"
+                      x-text="!sched.enabled ? 'paused' : (sched.next_run_at ? relativeTime(sched.next_run_at) : '—')"></span>
+                <span class="dim"
+                      x-text="(sched.keep_last_n || 0) + ' kept, delete after ' + (sched.retention_days || 0) + 'd'"></span>
+                <span>
+                  <span class="badge" :class="sched.enabled ? 'badge-green' : ''"
+                        x-text="sched.enabled ? 'enabled' : 'paused'"></span>
+                </span>
+                <span class="schedule-actions">
+                  <button class="icon-btn icon-btn-primary" @click="runSchedule(sched)"
+                          :disabled="isScheduleRunning(sched)"
+                          :title="isScheduleRunning(sched) ? 'Running…' : 'Run this backup now'">
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path fill="currentColor" stroke="none" d="M5 3.5l7.5 4.5L5 12.5z"/>
+                    </svg>
+                  </button>
+                  <button class="icon-btn" @click="toggleSchedulePause(sched)"
+                          :title="sched.enabled ? 'Pause this schedule (keeps cron, just stops firing)' : 'Resume this schedule'">
+                    <svg x-show="sched.enabled" viewBox="0 0 16 16" aria-hidden="true">
+                      <path fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" d="M5.5 3v10 M10.5 3v10"/>
+                    </svg>
+                    <svg x-show="!sched.enabled" viewBox="0 0 16 16" aria-hidden="true">
+                      <path fill="currentColor" stroke="none" d="M5 3.5l7.5 4.5L5 12.5z"/>
+                    </svg>
+                  </button>
+                  <button class="icon-btn" @click="openEditScheduleModal(sched)" title="Edit schedule">
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z M10 3l3 3"/>
+                    </svg>
+                  </button>
+                  <button class="icon-btn" @click="openScheduleHistory(sched)" title="View backup history">
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M8 3.5v4.6l3 1.9 M2.5 8a5.5 5.5 0 1 0 1.6-3.9 M2.5 4.2v2.5H5"/>
+                    </svg>
+                  </button>
+                  <button class="icon-btn icon-btn-danger" @click="deleteSchedule(sched)"
+                          title="Delete schedule (existing backup files are kept)">
+                    <svg viewBox="0 0 16 16" aria-hidden="true">
+                      <path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" d="M3 4h10 M5.5 4V2.5h5V4 M4.5 4l1 9.5h5l1-9.5 M6.5 6.5v5 M9.5 6.5v5"/>
+                    </svg>
+                  </button>
+                </span>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Manual backup — secondary surface for one-off snapshots. -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">Manual backup</div>
         <button class="btn" @click="loadBackups()">Refresh</button>
       </div>
       <div class="panel-body" style="padding:0">
         <template x-if="instances.length === 0">
-          <div class="empty">No Qui instances configured. Go to Settings first.</div>
+          <div class="empty">No Qui instances configured. Add one on the Publish tab first.</div>
         </template>
 
         <template x-for="inst in instances" :key="'bk-' + inst.qui_instance_id">
@@ -670,17 +880,182 @@
         </template>
       </div>
     </div>
+
+    <!-- Global option — applies regardless of schedule. -->
+    <div class="panel">
+      <div class="panel-header"><div class="panel-title">Backup options</div></div>
+      <div class="panel-body">
+        <label style="display:flex; align-items:center; gap:8px">
+          <input type="checkbox" x-model="backupGitignored" @change="saveBackupGitignored()">
+          <span>Hide backups from GitHub</span>
+        </label>
+        <p class="dim" style="font-size:var(--font-xs); margin-top:4px; line-height:1.5">
+          Backups live alongside your share-repo at <code>&lt;repo&gt;/../backups-full/</code>.
+          With this on, qui-sync writes a <code>.gitignore</code> entry so they never end up
+          on GitHub even if you accidentally commit them.
+        </p>
+      </div>
+    </div>
+
+    <!-- Add/Edit schedule modal. -->
+    <div class="modal-backdrop" x-show="scheduleModal.open" @keydown.escape.window="scheduleModal.open = false"
+         x-transition.opacity style="display:none">
+      <div class="modal" @click.stop style="width:560px">
+        <div class="modal-title" x-text="scheduleModal.editing ? 'Edit backup schedule' : 'Add backup schedule'"></div>
+        <div class="modal-body">
+          <div class="form-grid">
+            <label>Name</label>
+            <input class="input" x-model="scheduleModal.draft.name" placeholder="e.g. TV nightly"
+                   maxlength="80" autofocus>
+
+            <label>Schedule</label>
+            <div>
+              <select class="input" x-model="scheduleModal.preset" @change="applySchedulePreset()" style="width:240px">
+                <option value="custom">Custom (enter cron below)</option>
+                <option value="@daily">Every day at midnight</option>
+                <option value="0 3 * * *">Every day at 03:00</option>
+                <option value="0 22 * * *">Every day at 22:00</option>
+                <option value="0 22 * * 1,5">Twice a week (Mon + Fri at 22:00)</option>
+                <option value="0 3 * * 0">Weekly on Sunday at 03:00</option>
+                <option value="0 */6 * * *">Every 6 hours</option>
+                <option value="0 */12 * * *">Every 12 hours</option>
+              </select>
+              <input class="input" style="margin-top:6px; width:240px; font-family:var(--font-mono)"
+                     x-model="scheduleModal.draft.cron"
+                     @input="scheduleModal.preset = 'custom'; _refreshScheduleCronHelp()"
+                     placeholder="0 3 * * *">
+              <div style="margin-top:4px; font-size:var(--font-xs); min-height:1.4em"
+                   :style="scheduleModal.cronInvalid ? 'color:var(--text-err)' : 'color:var(--text-secondary)'"
+                   x-text="scheduleModal.cronHuman"></div>
+            </div>
+
+            <label>Back up these instances</label>
+            <div>
+              <template x-if="instances.length === 0">
+                <div class="instance-picker-empty">No Qui instances configured yet. Add one on the Publish tab first.</div>
+              </template>
+              <template x-if="instances.length > 0">
+                <div class="instance-picker">
+                  <template x-for="inst in instances" :key="'sched-inst-' + inst.qui_instance_id">
+                    <label class="instance-picker-row">
+                      <input type="checkbox"
+                             :checked="scheduleModal.draft.instances.includes(inst.qui_instance_id)"
+                             @change="toggleScheduleInstance(inst.qui_instance_id)">
+                      <span x-text="inst.qui_name"></span>
+                      <span class="dim" style="font-size:var(--font-xs)" x-text="'#' + inst.qui_instance_id"></span>
+                    </label>
+                  </template>
+                </div>
+              </template>
+              <p class="dim" style="font-size:var(--font-xs); margin-top:6px; line-height:1.4">
+                Pick the specific instances this schedule covers, or leave them all unchecked to back up
+                every configured instance (including any added later).
+              </p>
+            </div>
+
+            <label>Keep at least</label>
+            <div style="display:flex; align-items:center; gap:8px">
+              <input class="input" type="number" min="0" max="10000" style="width:80px"
+                     x-model.number="scheduleModal.draft.keep_last_n">
+              <span class="dim" style="font-size:var(--font-sm)">most recent backups</span>
+            </div>
+
+            <label>Delete after</label>
+            <div>
+              <div style="display:flex; align-items:center; gap:8px">
+                <input class="input" type="number" min="0" max="3650" style="width:80px"
+                       x-model.number="scheduleModal.draft.retention_days">
+                <span class="dim" style="font-size:var(--font-sm)">days (0 = never)</span>
+              </div>
+              <p class="dim" style="font-size:var(--font-xs); margin-top:4px; line-height:1.4">
+                A backup is deleted only when it's older than this AND there are more recent
+                backups than the "keep at least" floor. Whichever rule kicks in last wins.
+                When two schedules cover the same instance, the longest retention wins (snapshots
+                are shared on disk).
+              </p>
+            </div>
+
+            <label>Enabled</label>
+            <label style="display:flex; align-items:center; gap:8px; font-weight:normal">
+              <input type="checkbox" x-model="scheduleModal.draft.enabled" @change="_refreshScheduleCronHelp()">
+              <span class="dim" style="font-size:var(--font-sm)"
+                    x-text="scheduleModal.draft.enabled ? 'Schedule fires on its cron' : 'Paused — schedule kept but no automatic runs'"></span>
+            </label>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" @click="scheduleModal.open = false">Cancel</button>
+          <button class="btn btn-primary" @click="saveSchedule()"
+                  :disabled="scheduleModal.saving || !scheduleModal.draft.name">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- History modal. -->
+    <div class="modal-backdrop" x-show="historyModal.open" @keydown.escape.window="historyModal.open = false"
+         x-transition.opacity style="display:none">
+      <div class="modal" @click.stop style="width:720px">
+        <div class="modal-title">Backup history — <span x-text="historyModal.scheduleName"></span></div>
+        <div class="modal-body">
+          <p class="dim" style="font-size:var(--font-sm)">
+            All snapshots on disk for the instances this schedule covers.
+            Other schedules sharing the same instances may have contributed.
+          </p>
+          <template x-if="historyModal.entries.length === 0">
+            <div class="empty">No backups on disk for this schedule's instances yet.</div>
+          </template>
+          <template x-if="historyModal.entries.length > 0">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th>Instance</th>
+                  <th>Timestamp</th>
+                  <th>Rules</th>
+                  <th style="width:240px">Restore to</th>
+                  <th style="width:100px"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <template x-for="bk in historyModal.entries" :key="bk.id + '-hist'">
+                  <tr>
+                    <td x-text="bk._instance_name"></td>
+                    <td x-text="bk.timestamp"></td>
+                    <td x-text="bk.rule_count + ' rules'"></td>
+                    <td>
+                      <select class="input" style="width:100%; font-size:var(--font-xs)"
+                              x-model.number="bk._restoreTarget">
+                        <template x-for="ri in instances" :key="'hist-rt-' + ri.qui_instance_id">
+                          <option :value="ri.qui_instance_id"
+                                  x-text="ri.qui_name + ' (#' + ri.qui_instance_id + ')'"></option>
+                        </template>
+                      </select>
+                    </td>
+                    <td>
+                      <button class="btn btn-sm" @click="restoreBackup(bk.instance_id, bk)"
+                              :disabled="!bk._restoreTarget || restoringBackup">Restore</button>
+                    </td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </template>
+        </div>
+        <div class="modal-actions">
+          <button class="btn" @click="historyModal.open = false">Close</button>
+        </div>
+      </div>
+    </div>
   </section>
 
   <!-- SETTINGS TAB -->
   <section x-show="tab==='settings'">
     <h1 class="page-title">Settings</h1>
-    <p class="page-subtitle">Configure Qui connection, export instances, backup, and appearance. Changes save to config.yml immediately.</p>
+    <p class="page-subtitle">Configure how qui-sync connects to Qui and what it looks like. Backup schedules live on the Backup tab; what you publish lives on the Publish tab.</p>
 
     <div class="panel" style="border-color:var(--accent-amber)"
          x-show="config && config.qui && !config.qui.api_key_present">
       <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber)">
-        <b>Setup needed</b> — enter your Qui URL and API key below to get started. Export and Sync won't work until Qui is connected.
+        <b>Setup needed</b> — enter your Qui URL and API key below to get started. Publish and Subscribe won't work until Qui is connected.
       </div>
     </div>
 
@@ -734,130 +1109,6 @@
       </div>
     </div>
 
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">Export instances</div>
-        <button class="btn" @click="openAddInstanceModal()">+ Add instance</button>
-      </div>
-      <div class="panel-body" style="padding:0">
-        <table class="table" x-show="config && config.export_instances && config.export_instances.length">
-          <thead>
-            <tr>
-              <th style="width:120px">Qui instance</th>
-              <th>Repo folder</th>
-              <th style="width:100px; text-align:right"></th>
-            </tr>
-          </thead>
-          <tbody>
-            <template x-for="i in (config && config.export_instances) || []" :key="i.qui_instance_id">
-              <tr>
-                <td x-text="'#' + i.qui_instance_id"></td>
-                <td style="font-family:var(--font-mono); font-size:var(--font-sm)" x-text="i.category"></td>
-                <td style="text-align:right">
-                  <button class="btn btn-sm btn-danger" @click="removeInstance(i)">Remove</button>
-                </td>
-              </tr>
-            </template>
-          </tbody>
-        </table>
-        <div x-show="!config || !config.export_instances || config.export_instances.length === 0"
-             class="empty">No instances configured. Click "Add instance" to get started.</div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">Backup</div>
-      </div>
-      <div class="panel-body">
-        <div class="form-grid">
-          <label>Enabled</label>
-          <div>
-            <label style="display:inline-flex; align-items:center; gap:8px; font-weight:normal">
-              <input type="checkbox" x-model="backupDraft.enabled">
-              <span class="dim" style="font-size:var(--font-xs)"
-                    x-text="backupDraft.enabled ? 'Scheduled backups run per the cron below' : 'Paused — backups run only when triggered manually'"></span>
-            </label>
-          </div>
-
-          <label>Cron</label>
-          <div>
-            <input class="input" style="width:220px; font-family:var(--font-mono)"
-                   x-model="backupDraft.cron"
-                   placeholder="0 3 * * *"
-                   :disabled="!backupDraft.enabled"
-                   title="Standard 5-field cron (minute hour day-of-month month day-of-week). Shortcuts like @daily, @weekly, @hourly are accepted.">
-            <div style="margin-top:4px; font-size:var(--font-xs); min-height:1.4em"
-                 :style="backupCronInvalid ? 'color:var(--text-err)' : 'color:var(--text-secondary)'"
-                 x-text="backupCronHuman"></div>
-          </div>
-
-          <label>Retention days</label>
-          <input class="input" type="number" min="0" max="3650" style="width:100px"
-                 x-model.number="backupDraft.retention_days">
-
-          <label>Keep last N</label>
-          <input class="input" type="number" min="0" max="10000" style="width:100px"
-                 x-model.number="backupDraft.keep_last_n">
-
-          <label>Gitignored</label>
-          <input type="checkbox" x-model="backupDraft.gitignored">
-        </div>
-        <p class="dim" style="font-size:var(--font-xs); margin-top:8px; line-height:1.5">
-          <b>Enabled</b> — master switch. Off means manual backups only; the cron keeps its value so flipping it back on resumes the previous cadence.<br>
-          <b>Cron</b> — 5-field expression (<code>minute hour day-of-month month day-of-week</code>). Shortcuts <code>@daily</code>, <code>@weekly</code>, <code>@hourly</code>, <code>@monthly</code> are accepted. Example: <code>0 3 * * *</code> = every day at 03:00.<br>
-          <b>Retention days</b> — snapshots older than this are deleted after the next scheduled run. 0 = never expire by age.<br>
-          <b>Keep last N</b> — minimum number of snapshots kept per instance regardless of age. 0 = no minimum. When both are set, snapshots must satisfy both rules to be evicted (old AND outside the floor).<br>
-          Backups live in <code>&lt;repo&gt;/../backups-full/</code>. Full 1:1 copies including trackers — never pushed to GitHub when gitignored is on.
-        </p>
-        <div style="margin-top:12px; display:flex; gap:8px">
-          <button class="btn btn-primary" @click="saveBackupConfig()">Save</button>
-          <button class="btn" @click="resetBackupDraft()">Reset</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-header">
-        <div class="panel-title">Share-repo (git)</div>
-      </div>
-      <div class="panel-body">
-        <div class="form-grid">
-          <label>Remote URL</label>
-          <div>
-            <input class="input" x-model="gitRemoteDraft"
-                   placeholder="https://github.com/you/qui-automations.git"
-                   autocomplete="off" spellcheck="false">
-            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
-              The GitHub repo where your exported rules are pushed. qui-sync auto-initializes git in <code>/data/repo/</code> if needed.
-            </div>
-          </div>
-          <label>Push token</label>
-          <div>
-            <input class="input" type="password" x-model="pushTokenDraft"
-                   placeholder="GitHub fine-grained PAT"
-                   autocomplete="new-password" data-1p-ignore data-lpignore="true">
-            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
-              Create a <b>fine-grained PAT</b> on GitHub with <b>Contents: Read+Write</b> permission scoped to your share-repo. Leave blank to keep existing token.
-            </div>
-          </div>
-        </div>
-        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
-          <button class="btn btn-primary" @click="saveGitConfig()">Save</button>
-          <button class="btn" @click="validateStoredPushToken()" :disabled="pushTokenValidating"
-                  title="Re-test the currently stored push token against GitHub. Catches revoked / expired tokens without a push attempt.">
-            <span x-show="!pushTokenValidating">Validate stored token</span>
-            <span x-show="pushTokenValidating">Validating…</span>
-          </button>
-          <span x-show="gitRemoteStatus === 'ok'" style="color:var(--accent-green); font-size:var(--font-sm)">● Configured</span>
-          <span x-show="gitRemoteStatus === 'none'" class="dim" style="font-size:var(--font-sm)">Not configured yet</span>
-          <span x-show="pushTokenValidated" style="color:var(--accent-green); font-size:var(--font-sm)"
-                x-text="'● Valid — ' + pushTokenValidated"></span>
-          <span x-show="pushTokenValidateError" style="color:var(--text-err); font-size:var(--font-sm)"
-                x-text="'● ' + pushTokenValidateError"></span>
-        </div>
-      </div>
-    </div>
 
     <div class="panel">
       <div class="panel-header">
@@ -875,11 +1126,15 @@
             <option value="24h">Every 24 hours</option>
           </select>
         </div>
-        <p class="dim" style="font-size:var(--font-xs); margin-top:8px">
+        <p class="dim" style="font-size:var(--font-xs); margin-top:8px; line-height:1.5">
           When enabled, qui-sync pulls all subscriptions on this interval and
           auto-applies changes to rules marked with the "Auto" checkbox in the
           Plan view. Rules without Auto stay manual — you apply them yourself.
           New rules from the repo are never auto-applied.
+          <br><br>
+          Auto-sync only runs for subscriptions that have an <b>Apply target</b>
+          set (Edit subscription → Apply to which Qui instance). Subscriptions
+          without a target are skipped silently.
         </p>
       </div>
     </div>
@@ -932,21 +1187,43 @@
     </div>
   </section>
 
-  <!-- SYNC TAB -->
-  <section x-show="tab==='sync'">
-    <h1 class="page-title">Sync</h1>
-    <p class="page-subtitle">Subscribe to share-repos and apply their rules to your Qui instances. Your local trackers and preferences are preserved on update.</p>
+  <!-- SUBSCRIBE TAB -->
+  <section x-show="tab==='subscribe'">
+    <h1 class="page-title">Subscribe</h1>
+    <p class="page-subtitle">Use Qui automations from someone else's collection. Your trackers and preferences stay yours — only the rule logic gets imported.</p>
+
+    <!-- Setup-needed banner — Subscribe needs a Qui connection to
+         apply pulled rules. -->
+    <div class="panel" style="border-color:var(--accent-amber)"
+         x-show="config && config.qui && !config.qui.api_key_present">
+      <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber); display:flex; align-items:center; gap:12px; flex-wrap:wrap">
+        <div style="flex:1; min-width:200px"><b>Setup needed</b> — connect to Qui first. Subscribed rules can't be applied until Qui is reachable.</div>
+        <button class="btn btn-sm" @click="setTab('settings')">Open Settings</button>
+      </div>
+    </div>
 
     <div class="panel help-panel" x-show="!hideSyncHelp">
       <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
         <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
-          <b>How it works:</b>
-          <b>1.</b> Add a subscription — point it at a git repo URL (public or private with SSH key / token).
-          <b>2.</b> Click <b>Pull</b> to fetch the latest rules from the repo.
-          <b>3.</b> Select which Qui instance to sync to, then click <b>Plan</b> to preview.
-          <b>4.</b> For each rule, choose: <em>Create new</em> in Qui, <em>Link</em> to an existing rule, or <em>Skip</em>.
-          <b>5.</b> Click <b>Apply</b> — new rules are created disabled. Linked rules are updated but your trackers, enabled state, and intervals are preserved.
-          <b>6.</b> Toggle <b>Auto</b> on rules you want to keep in sync automatically whenever the repo updates.
+          Subscribe to someone else's automation collection so you can use their setup without copying each rule by hand.
+          <br><br>
+          <b>1. Add subscription</b> — paste the repository URL, click <b>Look up what's in this repo</b>, then pick which folder (movies / tv / etc.) and which of your Qui instances should receive those rules. The instance choice is remembered so Plan + Apply use it automatically without asking again.
+          <br>
+          <b>2. Pull</b> — fetches the latest rules from the repository. Click whenever you want to check for updates.
+          <br>
+          <b>3. Plan</b> — shows what will happen for each rule (Create new, Update existing, or Skip). Two shortcuts speed this up:
+          <br>
+          &nbsp;&nbsp;• <b>Match by name</b> — auto-links every repo rule to your existing Qui rule with the same name (case-insensitive). Use this when you've already got rules with matching names in Qui.
+          <br>
+          &nbsp;&nbsp;• <b>Set all to Create new</b> — flips every rule to "create as new" if you'd rather start clean and reorganise after.
+          <br>
+          You can override any individual decision in the table before applying.
+          <br>
+          <b>4. Apply</b> — runs the planned changes. Your trackers, enabled state, and intervals stay yours — only the rule logic changes.
+          <br>
+          <b>5. Auto (optional)</b> — tick the Auto checkbox on rules you want to track automatically. qui-sync will apply future repo updates to those rules in the background.
+          <br><br>
+          New rules are always created <b>paused</b>. Enable them in Qui when you've checked the logic.
         </div>
         <button class="btn btn-sm" @click="dismissSyncHelp()" title="Hide this help">✕</button>
       </div>
@@ -1002,7 +1279,8 @@
                         :disabled="!selectedInstanceBySub[sub.slug] || loadingPlan[sub.slug]">
                   Plan
                 </button>
-                <button class="btn btn-primary" style="margin-left:8px"
+                <button class="btn" style="margin-left:8px"
+                        :class="planBySub[sub.slug] ? 'btn-primary' : ''"
                         @click="openApplyModal(sub.slug)"
                         :disabled="!planBySub[sub.slug] || applying[sub.slug]">
                   Apply selected
@@ -1027,14 +1305,23 @@
                       <span x-text="filteredPlanRules(sub.slug).length"></span> of
                       <span x-text="planBySub[sub.slug].rules.length"></span> rules
                       <span x-show="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length"
-                            x-text="' · ' + planBySub[sub.slug].orphans.length + ' in Qui only'"></span>
+                            x-text="' · ' + ((planBySub[sub.slug].orphans || []).length) + ' in Qui only'"></span>
                       <span x-show="planBySub[sub.slug].source_sha"
                             x-text="' · HEAD ' + planBySub[sub.slug].source_sha.slice(0,7)"></span>
                     </span>
                   </div>
-                  <div style="display:flex; gap:8px; padding:0 16px 8px">
+                  <div style="display:flex; gap:8px; padding:0 16px 8px; flex-wrap:wrap">
                     <button class="btn btn-sm" @click="selectAllRules(sub.slug, true)">Select all</button>
                     <button class="btn btn-sm" @click="selectAllRules(sub.slug, false)">Deselect all</button>
+                    <span style="border-left:1px solid var(--border); margin:0 4px"></span>
+                    <button class="btn btn-sm" @click="bulkMatchByName(sub.slug)"
+                            title="For every rule still set to Create new, look for a Qui rule with the same name and link to it instead">
+                      Match by name
+                    </button>
+                    <button class="btn btn-sm" @click="bulkSetAllCreateNew(sub.slug)"
+                            title="Set every rule in this plan to Create new — overrides any existing links">
+                      Create new for all
+                    </button>
                   </div>
                   <table class="table plan-table">
                     <thead>
@@ -1066,21 +1353,36 @@
                                  x-text="rule.repo_path"></div>
                           </td>
                           <td>
+                            <!-- :selected per-option (not :value on the select) — Alpine's
+                                 :value sets the property BEFORE x-for has finished rendering
+                                 the dynamic options, so an "u:42" lookup falls back to the
+                                 first option ("Create new") even when rule.action is
+                                 update_existing. Per-option :selected is evaluated as each
+                                 option mounts, so dynamically-rendered options can opt-in to
+                                 being the selected one regardless of timing. -->
                             <select class="input" style="width:100%; font-size:var(--font-xs)"
-                                    :value="rule.action === 'update_existing' ? 'u:' + rule.qui_rule_id : rule.action"
                                     @change="setRuleLink(sub.slug, rule, $event.target.value)">
-                              <option value="create_new">Create new</option>
-                              <option value="skip">Skip this rule</option>
-                              <template x-for="qr in quiRulesCache[selectedInstanceBySub[sub.slug]] || []" :key="qr.qui_rule_id">
-                                <option :value="'u:' + qr.qui_rule_id" x-text="'Link: ' + qr.name + ' (#' + qr.qui_rule_id + ')'"></option>
+                              <option value="create_new" :selected="rule.action === 'create_new'">Create new</option>
+                              <option value="skip" :selected="rule.action === 'skip'">Skip this rule</option>
+                              <template x-for="qr in quiRulesCache[planBySub[sub.slug].qui_instance_id] || []" :key="qr.qui_rule_id">
+                                <option :value="'u:' + qr.qui_rule_id"
+                                        :selected="rule.action === 'update_existing' && rule.qui_rule_id === qr.qui_rule_id"
+                                        x-text="'Link: ' + qr.name + ' (#' + qr.qui_rule_id + ')'"></option>
                               </template>
                             </select>
+                            <!-- Tiny source hint: distinguishes "this came from your last Apply"
+                                 (remembered) from "we auto-matched by name on this Plan run" (live).
+                                 Helps the user trust that overrides + skips persist across Plan runs. -->
+                            <div style="font-size:var(--font-xs); margin-top:3px; min-height:1em"
+                                 :style="rule.from_state
+                                   ? 'color:var(--accent-blue, #58a6ff)'
+                                   : 'color:var(--text-secondary)'"
+                                 x-text="describeMatchSource(rule)"></div>
                           </td>
                           <td style="text-align:center">
                             <input type="checkbox"
                                    :checked="rule.auto_sync"
-                                   :disabled="!rule.from_state"
-                                   :title="rule.from_state ? 'Auto-sync on future pulls' : 'Apply manually first to enable auto-sync'"
+                                   title="Auto-sync this rule on future pulls. Persisted at Apply time for new rules; takes effect immediately for already-applied rules."
                                    @change="toggleAutoSync(sub.slug, rule)">
                           </td>
                           <td>
@@ -1137,10 +1439,19 @@
                  :disabled="addSubSSHKey.length > 0 || addSubEditing"
                  :title="addSubEditing ? 'Name is fixed once a subscription exists — remove and re-add to rename' : ''">
           <label>URL</label>
-          <input class="input" x-model="addSubDraft.url" placeholder="https://github.com/.../qui-automations.git or /data"
-                 autocomplete="off" spellcheck="false"
-                 :disabled="addSubSSHKey.length > 0"
-                 title="Git repo URL (HTTPS or SSH), or a local path like /data for testing against your own export repo">
+          <div>
+            <input class="input" x-model="addSubDraft.url" placeholder="https://github.com/.../qui-automations.git or /data"
+                   autocomplete="off" spellcheck="false" style="width:100%"
+                   :disabled="addSubSSHKey.length > 0"
+                   title="Git repo URL (HTTPS or SSH), or a local path like /data for testing against your own export repo">
+            <p x-show="addSubEditing && addSubOriginalURL && addSubDraft.url !== addSubOriginalURL"
+               style="font-size:var(--font-xs); margin-top:4px; padding:6px 10px;
+                      background:rgba(255, 165, 0, 0.10); border:1px solid var(--accent-amber, #d29922);
+                      border-radius:var(--radius); color:var(--text-secondary); line-height:1.4">
+              ⚠ Changing the URL re-clones the repository on next Pull. Existing Apply state
+              (per-rule decisions, Auto flags) is preserved by slug.
+            </p>
+          </div>
           <label>Branch</label>
           <input class="input" x-model="addSubDraft.branch" placeholder="main" autocomplete="off"
                  :disabled="addSubSSHKey.length > 0">
@@ -1158,22 +1469,74 @@
                      autocomplete="new-password" data-1p-ignore data-lpignore="true" spellcheck="false">
             </div>
           </template>
-          <label>Category filter</label>
-          <div>
-            <input class="input" x-model="addSubDraft.target_category"
-                   list="addSubCategoryOptions"
-                   placeholder="Leave empty for all categories"
-                   autocomplete="off" spellcheck="false"
-                   title="Restrict Plan/Apply to one folder in the repo (e.g. 'movies' or 'misc'). Leave blank to sync the whole repo.">
-            <datalist id="addSubCategoryOptions">
-              <template x-for="c in addSubCategoryHints" :key="c">
-                <option :value="c"></option>
-              </template>
-            </datalist>
-            <p class="dim" style="font-size:var(--font-xs); margin-top:4px; margin-bottom:0">
-              Folder name from the repo (e.g. <code>movies</code>, <code>misc</code>). Blank = sync everything.
-            </p>
+        </div>
+
+        <!-- Look-up button — clones the repo into a temp dir and reports
+             the categories it finds. Only viable for public + token
+             auth at this stage; SSH needs phase-1 key generation done
+             first. The result populates the radio list below so the
+             user picks what to sync from a real list. -->
+        <div style="margin-top:14px"
+             x-show="addSubDraft.auth_mode !== 'ssh_deploy_key' || addSubSSHKey || addSubEditing">
+          <button class="btn" @click="probeSubscription()"
+                  :disabled="!addSubDraft.url || addSubProbing"
+                  title="Look at the repo and list which categories are available">
+            <span x-show="!addSubProbing">Look up what's in this repo</span>
+            <span x-show="addSubProbing">Looking up…</span>
+          </button>
+          <span style="margin-left:10px; font-size:var(--font-xs); color:var(--text-err)"
+                x-show="addSubProbeError"
+                x-text="addSubProbeError"></span>
+        </div>
+
+        <!-- Category picker — populated by probe. Radio list with rule
+             counts per category, plus an "everything" option that maps
+             to the empty target_category (== sync the full repo). -->
+        <div style="margin-top:16px"
+             x-show="addSubProbeCategories && addSubProbeCategories.length > 0">
+          <div style="font-size:var(--font-sm); font-weight:500; margin-bottom:8px">
+            What to sync from this repo
           </div>
+          <div class="instance-picker">
+            <label class="instance-picker-row">
+              <input type="radio" x-model="addSubDraft.target_category" value="">
+              <span>Everything in this repo</span>
+              <span class="dim" style="font-size:var(--font-xs); margin-left:auto"
+                    x-text="addSubProbeTotal + ' rules'"></span>
+            </label>
+            <template x-for="cat in addSubProbeCategories" :key="cat.name">
+              <label class="instance-picker-row">
+                <input type="radio" x-model="addSubDraft.target_category" :value="cat.name">
+                <span x-text="'Just ' + cat.name"></span>
+                <span class="dim" style="font-size:var(--font-xs); margin-left:auto"
+                      x-text="cat.rule_count + ' rules'"></span>
+              </label>
+            </template>
+          </div>
+        </div>
+
+        <!-- Qui instance pre-bind — once the user picks a category, they
+             tell qui-sync which Qui instance these rules should land in.
+             Saved on the subscription so the Plan/Apply expand starts
+             with this instance pre-filled, and auto-sync uses it without
+             asking. -->
+        <div style="margin-top:16px"
+             x-show="addSubProbeCategories && addSubProbeCategories.length > 0">
+          <div style="font-size:var(--font-sm); font-weight:500; margin-bottom:6px">
+            Apply to which Qui instance?
+          </div>
+          <select class="input" x-model.number="addSubDraft.target_instance_id" style="width:280px">
+            <option :value="0">— pick later when applying —</option>
+            <template x-for="i in instances" :key="'sub-inst-' + i.qui_instance_id">
+              <option :value="i.qui_instance_id"
+                      x-text="i.qui_name + ' (#' + i.qui_instance_id + ')'"></option>
+            </template>
+          </select>
+          <p class="dim" style="font-size:var(--font-xs); margin-top:4px; line-height:1.4">
+            Pre-binds this subscription to one of your Qui instances. When you Plan/Apply the
+            "Sync to" dropdown will be filled in for you, and auto-sync will know where to
+            apply changes without asking. You can change this later by editing the subscription.
+          </p>
         </div>
 
         <!-- SSH hint before generation -->
@@ -1226,6 +1589,19 @@
             <span class="dim">(logic replaced; your trackers, enabled state, and intervals preserved)</span></li>
           <li><b class="dim" x-text="applyModal.skip"></b> rules skipped</li>
         </ul>
+        <!-- Filter-active warning so the user isn't surprised that
+             rules in other categories were excluded from this round.
+             They can clear the filter and re-Apply to cover them. -->
+        <p x-show="applyModal.filterActive"
+           style="font-size:var(--font-xs); margin-top:14px; padding:10px 12px;
+                  background:rgba(255, 165, 0, 0.10); border:1px solid var(--accent-amber, #d29922);
+                  border-radius:var(--radius); color:var(--text-secondary); line-height:1.5">
+          ⚠ <b>Category filter active:</b> only the
+          <b x-text="applyModal.visibleCount"></b> rule(s) in
+          <b x-text="applyModal.filterCategory"></b> will be applied.
+          The remaining <b x-text="applyModal.totalCount - applyModal.visibleCount"></b>
+          in other categories stay untouched. Clear the filter and Apply again to cover them.
+        </p>
       </div>
       <div class="modal-actions">
         <button class="btn" @click="applyModal.open = false">Cancel</button>
@@ -1261,7 +1637,7 @@
 <script>
   // Persist tab + scale across reloads. App wiring in app.js.
   window.__QUI_SYNC_BOOTSTRAP__ = {
-    tab:   localStorage.getItem('qui.tab')   || 'export',
+    tab:   localStorage.getItem('qui.tab')   || 'backup',
     scale: localStorage.getItem('qui.scale') || 'default',
   };
 </script>

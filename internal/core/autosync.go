@@ -89,6 +89,15 @@ func (w *AutoSyncWorker) runOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		// Skip the synthetic __local__ subscription — it's a symlink to
+		// the maintainer's own /data/repo working tree, used only by the
+		// "Apply local rules to my own Qui" flow on the Publish tab.
+		// Auto-syncing it would call FetchSubscription → git fetch +
+		// reset --hard FETCH_HEAD on the maintainer's working tree,
+		// wiping any locally-exported but unpushed rule files.
+		if slug == "__local__" {
+			continue
+		}
 		sub := state.SubscriptionSnapshot(slug)
 		if sub == nil || sub.TargetInstanceID == 0 {
 			continue // no target set — skip

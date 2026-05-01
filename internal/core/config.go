@@ -21,10 +21,43 @@ type Config struct {
 	ExportInstances []ExportInstance `yaml:"export_instances,omitempty"`
 	StripFields     []string         `yaml:"strip_fields,omitempty"`
 	ReverseMappings Mappings         `yaml:"reverse_mappings,omitempty"`
-	Backup          BackupConfig     `yaml:"backup,omitempty"`
+
+	// BackupSchedules is the active list of named backup rules, each
+	// with its own cron, instance set, and retention. v0.3 replaces
+	// the old single-schedule `backup:` block with this list — the
+	// migration in LoadConfig converts the old shape into the first
+	// entry (named "Default backup") on first read.
+	BackupSchedules []BackupSchedule `yaml:"backup_schedules,omitempty"`
+
+	// BackupGitignored is the global "hide backups from GitHub" toggle.
+	// Applies to every schedule — there's no per-schedule reason to
+	// publish backups since the backups-full directory is shared by all.
+	BackupGitignored bool `yaml:"backup_gitignored,omitempty"`
+
+	// RepoDisplayName is the friendly label shown in the "Where to
+	// publish" card on the Publish tab. Optional — when blank the UI
+	// derives a label from the URL (last path segment minus .git).
+	// Stored here rather than in .git/config so it survives a remote
+	// URL change and a `git remote remove origin`.
+	RepoDisplayName string `yaml:"repo_display_name,omitempty"`
+
+	// Backup is the legacy single-schedule shape. Read once on Load for
+	// migration; never written back. New code reads BackupSchedules.
+	Backup BackupConfig `yaml:"backup,omitempty"`
 
 	// Sync settings
 	AutoPullInterval string `yaml:"auto_pull_interval,omitempty" json:"auto_pull_interval,omitempty"` // off, 5m, 1h, 6h, 12h, 24h
+
+	// Authentication — Radarr/Sonarr-parity model. See internal/auth.
+	// Defaults: forms + disabled_for_local_addresses + 30-day session.
+	// Empty values mean "use the auth package default" so an unmigrated
+	// config doesn't lock the user out — first-run /setup wizard takes
+	// over until credentials exist.
+	Authentication         string `yaml:"authentication,omitempty"`           // forms | basic | none
+	AuthenticationRequired string `yaml:"authentication_required,omitempty"` // enabled | disabled_for_local_addresses
+	SessionTTLDays         int    `yaml:"session_ttl_days,omitempty"`         // 0 → 30 days
+	TrustedNetworks        string `yaml:"trusted_networks,omitempty"`         // comma-separated CIDRs/IPs
+	TrustedProxies         string `yaml:"trusted_proxies,omitempty"`          // comma-separated IPs
 
 	// Consumer mode (reserved for v0.2+)
 	Source           *SourceConfig             `yaml:"source,omitempty"`
@@ -60,34 +93,56 @@ type Mappings struct {
 	Paths      map[string]string `yaml:"paths,omitempty"`
 }
 
+// BackupSchedule is a named, cron-scheduled rule that snapshots the
+// listed Qui instances on its cadence. Multiple schedules can exist
+// independently — e.g. "TV nightly" on instance 1 every day at 03:00,
+// "Weekly full" on every instance every Sunday. Schedules with empty
+// Instances back up every configured ExportInstance (the "everything"
+// fallback for users who don't want to think about scoping).
+type BackupSchedule struct {
+	// ID is a stable slug (e.g. "tv-nightly"), generated server-side
+	// when the schedule is created. Used by the API for update/delete
+	// and by the UI as the React-key equivalent. Never user-edited.
+	ID string `yaml:"id" json:"id"`
+
+	// Name is the user-facing label shown on the schedule card.
+	// Defaults to "Backup" when blank.
+	Name string `yaml:"name" json:"name"`
+
+	// Cron is the 5-field cron expression. Empty string or invalid
+	// parse → schedule treated as inactive regardless of Enabled.
+	Cron string `yaml:"cron" json:"cron"`
+
+	// Enabled is an independent on/off toggle so a schedule can be
+	// paused without losing its cron — flipping it back resumes the
+	// previous cadence. Same pattern as the v0.2 single-schedule.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+
+	// Instances is the set of qui_instance_ids this schedule snapshots.
+	// Empty means "every configured ExportInstance" — preserves the
+	// pre-v0.3 single-schedule behaviour for migrated configs.
+	Instances []int `yaml:"instances,omitempty" json:"instances,omitempty"`
+
+	// RetentionDays is the age threshold for automatic pruning of this
+	// schedule's snapshots. Snapshots older than RetentionDays are
+	// candidates for deletion, but only beyond the KeepLastN floor —
+	// the two rules combine so we never drop below the recent-N safety
+	// net even when every snapshot is past retention.
+	RetentionDays int `yaml:"retention_days" json:"retention_days"`
+
+	// KeepLastN is the minimum number of snapshots kept per instance
+	// regardless of age. 0 means "rely on RetentionDays alone".
+	KeepLastN int `yaml:"keep_last_n" json:"keep_last_n"`
+}
+
+// BackupConfig is the legacy single-schedule shape. Read once at
+// LoadConfig for migration into BackupSchedules; not written back.
 type BackupConfig struct {
-	// Cron is the 5-field cron expression (min hour dom month dow) that
-	// decides when the scheduler fires. Any expression robfig/cron/v3's
-	// standard parser accepts is valid — including `*/6`, ranges,
-	// comma-separated lists, and @daily/@weekly/@monthly shortcuts.
-	// Empty string or an invalid expression is treated as "disabled"
-	// regardless of the Enabled flag below.
-	Cron string `yaml:"cron"`
-
-	// Enabled is an independent on/off toggle. Lets the user pause the
-	// schedule without losing the cron expression, so flipping it back
-	// on restores the previous cadence without having to re-enter it.
-	Enabled bool `yaml:"enabled"`
-
-	// RetentionDays is the age threshold for automatic pruning — any
-	// snapshot older than this many days is a candidate for deletion.
-	// A snapshot is only removed if it is BOTH older than RetentionDays
-	// AND there are more than KeepLastN snapshots for its instance; the
-	// two rules combine so we never prune below the "keep last N" floor
-	// even if every snapshot is ancient.
-	RetentionDays int `yaml:"retention_days"`
-
-	// KeepLastN is the minimum number of snapshots to keep per instance
-	// regardless of age. 0 or negative means "no minimum — rely on
-	// RetentionDays alone".
-	KeepLastN int `yaml:"keep_last_n"`
-
-	Gitignored bool `yaml:"gitignored"`
+	Cron          string `yaml:"cron"`
+	Enabled       bool   `yaml:"enabled"`
+	RetentionDays int    `yaml:"retention_days"`
+	KeepLastN     int    `yaml:"keep_last_n"`
+	Gitignored    bool   `yaml:"gitignored"`
 }
 
 type SourceConfig struct {
@@ -133,16 +188,64 @@ func LoadConfig(path string) (*Config, error) {
 		cfg.RepoDir = "/data/repo"
 	}
 
+	// Migrate legacy `backup:` block (pre-v0.3 single schedule) into the
+	// first BackupSchedules entry. Idempotent — runs only when the new
+	// list is empty AND the old block has any data. Persists immediately
+	// so subsequent loads find the canonical shape and skip migration.
+	if migrated := migrateLegacyBackup(&cfg); migrated {
+		if err := SaveConfig(path, &cfg); err != nil {
+			return nil, fmt.Errorf("persist migrated backup schedule: %w", err)
+		}
+	}
+
 	return &cfg, nil
+}
+
+// migrateLegacyBackup converts the pre-v0.3 single-schedule `backup:`
+// block into the new BackupSchedules list. Returns true when a write-
+// back is needed. Empty Instances on the migrated entry means "every
+// configured ExportInstance", which preserves the pre-v0.3 fan-out.
+func migrateLegacyBackup(cfg *Config) bool {
+	if len(cfg.BackupSchedules) > 0 {
+		// Already on the new shape — clear any stray legacy fields so
+		// the next save writes a clean YAML without the old block.
+		if cfg.Backup != (BackupConfig{}) {
+			cfg.Backup = BackupConfig{}
+			return true
+		}
+		return false
+	}
+	legacy := cfg.Backup
+	if legacy.Cron == "" && !legacy.Enabled && legacy.RetentionDays == 0 && legacy.KeepLastN == 0 && !legacy.Gitignored {
+		// Fresh install with no legacy data — nothing to migrate.
+		return false
+	}
+	cfg.BackupSchedules = []BackupSchedule{
+		{
+			ID:            "default",
+			Name:          "Default backup",
+			Cron:          legacy.Cron,
+			Enabled:       legacy.Enabled,
+			Instances:     nil, // empty → all configured ExportInstances
+			RetentionDays: legacy.RetentionDays,
+			KeepLastN:     legacy.KeepLastN,
+		},
+	}
+	cfg.BackupGitignored = legacy.Gitignored
+	cfg.Backup = BackupConfig{} // clear legacy block; SaveConfig writes new shape
+	return true
 }
 
 // defaultConfig returns a working-but-empty config for first-run.
 // The user completes setup via Settings in the UI.
 func defaultConfig(path string) *Config {
 	return &Config{
-		Mode:    "maintainer",
-		RepoDir: "/data/repo",
-		Backup:  BackupConfig{Cron: "0 3 * * *", Enabled: false, RetentionDays: 90, Gitignored: true},
+		Mode:             "maintainer",
+		RepoDir:          "/data/repo",
+		BackupGitignored: true,
+		// Empty BackupSchedules — user creates their first schedule on
+		// the Backup tab. No silent default schedule firing without the
+		// user knowing it exists.
 	}
 }
 

@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"embed"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -14,23 +13,24 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
-	"github.com/prophetse7en/qui-sync/api"
-	"github.com/prophetse7en/qui-sync/core"
+	"github.com/prophetse7en/qui-sync/internal/api"
+	"github.com/prophetse7en/qui-sync/internal/auth"
+	"github.com/prophetse7en/qui-sync/internal/core"
+	"github.com/prophetse7en/qui-sync/internal/utils"
+	"github.com/prophetse7en/qui-sync/ui"
 )
 
-const version = "0.1.0-dev"
-
-//go:embed web/static
-var embeddedFS embed.FS
+const version = "0.3.0-dev"
 
 func main() {
 	var (
 		addr    = flag.String("addr", ":6070", "HTTP listen address")
 		cfgPath = flag.String("config", core.DefaultConfigPath(), "Path to config.yml")
-		webDir  = flag.String("web-dir", "", "Optional path to a web/static directory (dev override of embedded FS)")
+		webDir  = flag.String("web-dir", "", "Optional path to a ui/static directory (dev override of embedded FS)")
 	)
 	flag.Parse()
 
@@ -40,6 +40,13 @@ func main() {
 	}
 	if !cfg.IsQuiConfigured() {
 		log.Println("Qui not configured yet — open the UI and go to Settings to complete setup.")
+	}
+	// Reconcile .gitignore so testers upgrading from a build that
+	// only persisted the toggle (no real effect) get the actual file
+	// state on first boot. Best-effort — a missing repo or permissions
+	// hiccup logs but doesn't fail startup.
+	if err := core.EnsureBackupGitignore(cfg); err != nil {
+		log.Printf("backup .gitignore reconcile (continuing): %v", err)
 	}
 
 	staticFS, err := resolveStatic(*webDir)
@@ -52,35 +59,84 @@ func main() {
 		log.Fatalf("server: %v", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	// Authentication. InitAuth registers /setup, /login, /logout,
+	// /api/auth/status etc. onto the same mux and returns the live
+	// auth store. The middleware chain below routes every request
+	// through it before reaching the API or static handlers.
+	authStore := api.InitAuth(ctx, srv.GetConfig, version, mux)
+
+	// Background: reap expired sessions every 5 min so the in-memory
+	// map doesn't grow unbounded under sustained login traffic.
+	utils.SafeGo("session-cleanup", func() {
+		t := time.NewTicker(5 * time.Minute)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				authStore.CleanupExpiredSessions()
+			}
+		}
+	})
+
+	// Middleware chain — outermost first:
+	//   SecurityHeaders → CSRF → Auth → access-log → routes
+	// CSRF runs before Auth so the cookie is set on /login GET (which
+	// is public-facing). Auth then enforces session/api-key/local-bypass
+	// on every other path.
+	var handler http.Handler = api.AccessLog(mux)
+	handler = authStore.Middleware(handler)
+	handler = authStore.CSRFMiddleware(handler)
+	handler = auth.SecurityHeadersMiddleware(handler)
+
 	httpSrv := &http.Server{
 		Addr:              *addr,
-		Handler:           srv.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	// Auto-sync background worker.
 	worker := core.NewAutoSyncWorker(srv.GetConfig, srv.GetConsumerState, srv.NewClient)
-	go worker.Start(ctx)
+	utils.SafeGo("auto-sync-worker", func() { worker.Start(ctx) })
 
-	// Scheduled full-instance backups. The worker polls every minute
-	// and dispatches when the cfg.Backup.Cron expression fires — only
-	// when cfg.Backup.Enabled is true. Disabled by default until the
-	// user configures it via Settings.
+	// Scheduled full-instance backups. robfig/cron owns the timing —
+	// callbacks fire exactly at the next configured cron slot, never
+	// at restart. SetBackupScheduler wires the same instance into the
+	// API server so a Settings save can call Reload() and have the new
+	// cron take effect immediately.
 	backupScheduler := core.NewBackupScheduler(srv.GetConfig, srv.NewClient)
-	go backupScheduler.Start(ctx)
+	srv.SetBackupScheduler(backupScheduler)
+
+	// BackupRunStore persists per-schedule "last run" timestamps so the
+	// UI can show "last run 2h ago" without scanning every backup
+	// folder. Load here so a missing file (first run, or testers
+	// upgrading from a build before the store existed) is handled
+	// gracefully rather than fataling.
+	backupRuns := core.NewBackupRunStore(filepath.Dir(*cfgPath))
+	if err := backupRuns.Load(); err != nil {
+		log.Printf("backup-runs: load failed (continuing with empty store): %v", err)
+	}
+	backupScheduler.SetRunStore(backupRuns)
+	srv.SetBackupRunStore(backupRuns)
+
+	utils.SafeGo("backup-scheduler", func() { backupScheduler.Start(ctx) })
 
 	errCh := make(chan error, 1)
-	go func() {
+	utils.SafeGo("http-listener", func() {
 		log.Printf("qui-sync server %s — listening on %s (config: %s)", version, *addr, *cfgPath)
 		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			errCh <- err
 		}
 		close(errCh)
-	}()
+	})
 
 	select {
 	case <-ctx.Done():
@@ -114,7 +170,7 @@ func resolveStatic(webDir string) (fs.FS, error) {
 		}
 		return os.DirFS(webDir), nil
 	}
-	sub, err := fs.Sub(embeddedFS, "web/static")
+	sub, err := fs.Sub(ui.StaticFiles, "static")
 	if err != nil {
 		return nil, err
 	}

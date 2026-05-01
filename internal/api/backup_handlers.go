@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/prophetse7en/qui-sync/core"
+	"github.com/prophetse7en/qui-sync/internal/core"
 )
 
 // Backups are stored at <data-volume>/backups-full/<instance-id>/<timestamp>/
@@ -100,6 +100,13 @@ func (s *Server) handleListBackups(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, ts := range tsDirs {
 			if !ts.IsDir() {
+				continue
+			}
+			// Skip in-progress / crashed backups. CreateBackup writes to
+			// <ts>.tmp/ and renames to <ts>/ only on success; a stale
+			// .tmp would otherwise show up as a "restorable" snapshot
+			// that's actually missing rules.
+			if strings.HasSuffix(ts.Name(), ".tmp") {
 				continue
 			}
 			files, _ := os.ReadDir(filepath.Join(baseDir, id.Name(), ts.Name()))

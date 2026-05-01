@@ -228,6 +228,10 @@ code, pre { font-family: var(--font-mono); font-size: var(--font-xs); }
   border-color: var(--accent-red);
   color: var(--accent-red);
 }
+.btn-danger:hover:not(:disabled) {
+  background: var(--accent-red);
+  color: #0d1117;
+}
 
 /* Badges. */
 .badge {
@@ -472,6 +476,124 @@ textarea:focus-visible,
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+/* Schedule list — tabular layout that lines columns up across rows so
+   multiple schedules read like a table instead of independent cards. */
+.schedule-list {
+  display: grid;
+  grid-template-columns:
+    minmax(140px, 1.4fr)   /* name */
+    minmax(160px, 1.6fr)   /* schedule (cronstrue) */
+    minmax(110px, 1fr)     /* instances */
+    minmax(90px, 0.9fr)    /* last run */
+    minmax(90px, 0.9fr)    /* next run */
+    minmax(110px, 1fr)     /* retention */
+    auto                   /* status */
+    auto;                  /* actions */
+  gap: 0;
+  font-size: var(--font-sm);
+}
+.schedule-list > .schedule-row {
+  display: contents;       /* let row's children participate in the parent grid */
+}
+.schedule-list > .schedule-row > * {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-soft, var(--border));
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+}
+.schedule-list > .schedule-row.schedule-header > * {
+  font-size: var(--font-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated, transparent);
+  min-height: 32px;
+  padding: 6px 12px;
+}
+.schedule-list > .schedule-row:last-child > * {
+  border-bottom: none;
+}
+.schedule-actions {
+  justify-content: flex-end;
+  gap: 4px !important;
+}
+
+/* Icon-only buttons used in the schedule actions column.
+   Mirrored from tagarr's .icon-btn pattern — SVG paths with
+   currentColor stroke, bordered button so the affordance is
+   visible regardless of OS emoji rendering. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated, var(--bg-base));
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.icon-btn:hover:not(:disabled) {
+  background: var(--bg-base);
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
+}
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.icon-btn svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.icon-btn.icon-btn-primary {
+  color: var(--accent-green, #3fb950);
+}
+.icon-btn.icon-btn-danger {
+  color: var(--accent-red, #f85149);
+}
+.icon-btn.icon-btn-danger:hover:not(:disabled) {
+  background: rgba(255, 90, 90, 0.12);
+  border-color: var(--accent-red, #f85149);
+  color: var(--accent-red, #ff7b72);
+}
+
+/* Instance selector — bordered list inside a modal so it reads as a
+   distinct group instead of a row of unstyled checkboxes. */
+.instance-picker {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-base);
+  max-height: 200px;
+  overflow-y: auto;
+}
+.instance-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  font-weight: normal;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border-soft, var(--border));
+}
+.instance-picker-row:last-child {
+  border-bottom: none;
+}
+.instance-picker-row:hover {
+  background: var(--bg-elevated);
+}
+.instance-picker-empty {
+  padding: 12px;
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
 }
 
 /* Two-column form layout used in Settings tab. */

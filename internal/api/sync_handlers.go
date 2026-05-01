@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prophetse7en/qui-sync/core"
+	"github.com/prophetse7en/qui-sync/internal/core"
+	"github.com/prophetse7en/qui-sync/internal/netsec"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -37,7 +38,8 @@ type subscriptionSummary struct {
 	Branch           string   `json:"branch"`
 	AuthMode         string   `json:"auth_mode"`
 	TargetCategory   string   `json:"target_category,omitempty"`
-	RepoCategories   []string `json:"repo_categories,omitempty"` // top-level dirs in the clone (for the edit-modal dropdown)
+	TargetInstanceID int      `json:"target_instance_id,omitempty"` // pre-bound Qui instance for Plan/Apply (0 = unset)
+	RepoCategories   []string `json:"repo_categories,omitempty"`    // top-level dirs in the clone (for the edit-modal dropdown)
 	LastPullSHA      string   `json:"last_pull_sha,omitempty"`
 	LastPullAt       string   `json:"last_pull_at,omitempty"`
 	RuleCount        int      `json:"rule_count"`      // rules with decisions in state
@@ -54,13 +56,14 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 			continue
 		}
 		sum := subscriptionSummary{
-			Slug:           slug,
-			URL:            sub.URL,
-			Branch:         sub.Branch,
-			AuthMode:       string(sub.Auth.Mode),
-			TargetCategory: sub.TargetCategory,
-			LastPullSHA:    sub.LastPullSHA,
-			RuleCount:      len(sub.Rules),
+			Slug:             slug,
+			URL:              sub.URL,
+			Branch:           sub.Branch,
+			AuthMode:         string(sub.Auth.Mode),
+			TargetCategory:   sub.TargetCategory,
+			TargetInstanceID: sub.TargetInstanceID,
+			LastPullSHA:      sub.LastPullSHA,
+			RuleCount:        len(sub.Rules),
 		}
 		// Count rules + collect categories from the cloned repo. The
 		// repo layout is <category>/<Rule Name>.json at root (the legacy
@@ -97,12 +100,13 @@ func (s *Server) handleListSubscriptions(w http.ResponseWriter, r *http.Request)
 }
 
 type addSubscriptionReq struct {
-	Slug           string `json:"slug"`
-	URL            string `json:"url"`
-	Branch         string `json:"branch"`
-	AuthMode       string `json:"auth_mode"` // "public" | "ssh_deploy_key" | "token"
-	Token          string `json:"token,omitempty"`
-	TargetCategory string `json:"target_category,omitempty"` // optional folder filter (e.g. "movies")
+	Slug             string `json:"slug"`
+	URL              string `json:"url"`
+	Branch           string `json:"branch"`
+	AuthMode         string `json:"auth_mode"` // "public" | "ssh_deploy_key" | "token"
+	Token            string `json:"token,omitempty"`
+	TargetCategory   string `json:"target_category,omitempty"`    // optional folder filter (e.g. "movies")
+	TargetInstanceID int    `json:"target_instance_id,omitempty"` // Qui instance to pre-bind for Plan/Apply (0 = unset)
 }
 
 func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
@@ -115,8 +119,8 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, fmt.Errorf("invalid name %q — use lowercase letters, digits, hyphens and underscores only", req.Slug))
 		return
 	}
-	if req.URL == "" {
-		writeErr(w, 400, fmt.Errorf("url is required"))
+	if err := core.ValidateGitURL(req.URL); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
 	if req.Branch == "" {
@@ -162,7 +166,7 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := state.AddSubscription(req.Slug, req.URL, req.Branch, auth, strings.TrimSpace(req.TargetCategory)); err != nil {
+	if err := state.AddSubscription(req.Slug, req.URL, req.Branch, auth, strings.TrimSpace(req.TargetCategory), req.TargetInstanceID); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -171,6 +175,177 @@ func (s *Server) handleAddSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 201, map[string]any{"slug": req.Slug})
+}
+
+// probeReq carries enough auth info to perform a one-shot lightweight
+// clone for category discovery. Public is plain HTTPS. Token is the
+// PAT inline. SSH probe needs the keypair already on disk under
+// /config/git-keys/<slug>/ — Phase-1 of the SSH add flow generates
+// it, so the user is expected to have done that first.
+type probeReq struct {
+	Slug     string `json:"slug,omitempty"`     // required for ssh_deploy_key (key file lookup)
+	URL      string `json:"url"`
+	Branch   string `json:"branch,omitempty"`
+	AuthMode string `json:"auth_mode,omitempty"`
+	Token    string `json:"token,omitempty"`
+}
+
+type probeCategory struct {
+	Name      string `json:"name"`
+	RuleCount int    `json:"rule_count"`
+}
+
+type probeResp struct {
+	Categories []probeCategory `json:"categories"`
+	Total      int             `json:"total"`
+}
+
+// handleProbeSubscription does a temporary shallow clone, walks the
+// top-level directories, and reports each as a category with its
+// rule-file count. Used by the Add/Edit modal to populate a "what
+// you can subscribe to" picker so the user picks from real options
+// rather than guessing folder names.
+//
+// The clone is into a tmp dir we delete on return — no leftover
+// state. 30-second timeout so a misconfigured URL or unreachable
+// host doesn't tie up the request goroutine.
+func (s *Server) handleProbeSubscription(w http.ResponseWriter, r *http.Request) {
+	var req probeReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	url := strings.TrimSpace(req.URL)
+	if err := core.ValidateGitURL(url); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	branch := strings.TrimSpace(req.Branch)
+	if branch == "" {
+		branch = "main"
+	}
+
+	auth := core.SubscriptionAuth{Mode: core.GitAuthMode(req.AuthMode)}
+	switch req.AuthMode {
+	case "public", "":
+		auth.Mode = core.GitAuthPublic
+	case "token":
+		token := strings.TrimSpace(req.Token)
+		if token == "" {
+			// Edit-mode probe: re-typing a stored PAT just to discover
+			// categories is friction the user shouldn't pay. Fall back
+			// to the existing token file when slug + file both exist.
+			// The slug regex check is the same one Add uses, so a
+			// caller that doesn't supply a valid slug gets the clear
+			// "token required" error rather than a confusing 404.
+			if !subSlugRegex.MatchString(req.Slug) {
+				writeErr(w, 400, fmt.Errorf("token required for token auth"))
+				return
+			}
+			existing := filepath.Join(s.gitKeyDir(req.Slug), "token")
+			if _, err := os.Stat(existing); err != nil {
+				writeErr(w, 400, fmt.Errorf("token required for token auth"))
+				return
+			}
+			auth.TokenFile = existing
+		} else {
+			// Fresh token from the user — hold inline via tmp file so
+			// we don't write to a slug that may not be saved yet
+			// (the Add flow probes BEFORE saving).
+			tmpTokenDir, err := os.MkdirTemp("", "qui-sync-probe-tok-")
+			if err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+			defer os.RemoveAll(tmpTokenDir)
+			auth.TokenFile = filepath.Join(tmpTokenDir, "token")
+			if err := os.WriteFile(auth.TokenFile, []byte(token+"\n"), 0o600); err != nil {
+				writeErr(w, 500, err)
+				return
+			}
+		}
+	case "ssh_deploy_key":
+		if !subSlugRegex.MatchString(req.Slug) {
+			writeErr(w, 400, fmt.Errorf("slug required for ssh probe — generate the deploy key first"))
+			return
+		}
+		auth.KeyFile = filepath.Join(s.gitKeyDir(req.Slug), "id_ed25519")
+		if _, err := os.Stat(auth.KeyFile); err != nil {
+			writeErr(w, 400, fmt.Errorf("ssh key missing — generate it first via /api/subscriptions/generate-key"))
+			return
+		}
+	default:
+		writeErr(w, 400, fmt.Errorf("invalid auth_mode %q", req.AuthMode))
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "qui-sync-probe-")
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	// Convert SubscriptionAuth (file-pointers) to GitAuth (inline secrets)
+	// the same way core/sync.go does at fetch time. Token mode reads the
+	// tmp file we just wrote a few lines up.
+	gitAuth := core.GitAuth{Mode: auth.Mode, KeyFile: auth.KeyFile}
+	if auth.Mode == core.GitAuthToken && auth.TokenFile != "" {
+		tok, err := os.ReadFile(auth.TokenFile)
+		if err != nil {
+			writeErr(w, 500, fmt.Errorf("read token file: %w", err))
+			return
+		}
+		gitAuth.Token = strings.TrimSpace(string(tok))
+	}
+
+	cloneDir := filepath.Join(tmpDir, "clone")
+	if err := core.CloneSubscription(ctx, url, branch, cloneDir, gitAuth); err != nil {
+		writeErr(w, 502, fmt.Errorf("clone failed: %w", err))
+		return
+	}
+
+	cats, total := scanRepoCategories(cloneDir)
+	writeJSON(w, 200, probeResp{Categories: cats, Total: total})
+}
+
+// scanRepoCategories walks the top level of a freshly-cloned repo and
+// returns each non-hidden, non-archive directory that contains at
+// least one .json rule file. Rule counts are by file extension only —
+// matches what the Plan endpoint considers when building decisions.
+func scanRepoCategories(repoDir string) ([]probeCategory, int) {
+	entries, err := os.ReadDir(repoDir)
+	if err != nil {
+		return nil, 0
+	}
+	var out []probeCategory
+	total := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		if strings.HasPrefix(e.Name(), ".") || e.Name() == "archive" {
+			continue
+		}
+		count := 0
+		files, err := os.ReadDir(filepath.Join(repoDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			if !f.IsDir() && filepath.Ext(f.Name()) == ".json" {
+				count++
+			}
+		}
+		if count > 0 {
+			out = append(out, probeCategory{Name: e.Name(), RuleCount: count})
+			total += count
+		}
+	}
+	return out, total
 }
 
 // handleUpdateSubscription edits an existing subscription's mutable fields.
@@ -186,8 +361,8 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		writeErr(w, 400, err)
 		return
 	}
-	if req.URL == "" {
-		writeErr(w, 400, fmt.Errorf("url is required"))
+	if err := core.ValidateGitURL(req.URL); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
 	if req.Branch == "" {
@@ -238,7 +413,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 		_ = os.RemoveAll(core.SubscriptionCloneDir(cfg.Paths().Sources, slug))
 	}
 
-	if err := state.UpdateSubscription(slug, req.URL, req.Branch, auth, strings.TrimSpace(req.TargetCategory)); err != nil {
+	if err := state.UpdateSubscription(slug, req.URL, req.Branch, auth, strings.TrimSpace(req.TargetCategory), req.TargetInstanceID); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
@@ -311,9 +486,17 @@ func (s *Server) handlePlanSubscription(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// Persist the target instance so auto-sync knows where to apply.
-	sub := state.Subscription(slug)
-	sub.TargetInstanceID = req.QuiInstanceID
-	_ = state.Save(cfg.Paths().State)
+	// __local__ is the symlinked maintainer-side repo used by the
+	// Publish "Apply local rules to my own Qui" flow — auto-sync skips
+	// it explicitly so we mustn't even record a target for that slug
+	// (a stale target_instance_id+0 from a previous build would still
+	// be safe because autosync.go skips by slug, but keeping the state
+	// clean avoids future readers wondering why the synthetic
+	// subscription has a target).
+	if slug != "__local__" {
+		state.SetTargetInstanceID(slug, req.QuiInstanceID)
+		_ = state.Save(cfg.Paths().State)
+	}
 	writeJSON(w, 200, plan)
 }
 
@@ -428,13 +611,10 @@ func (s *Server) handleSetRuleAutoSync(w http.ResponseWriter, r *http.Request) {
 	slug := r.PathValue("slug")
 	cfg := s.getConfig()
 	state := s.getConsumerState()
-	sub := state.Subscription(slug)
-	rule := sub.Rules[req.RepoPath]
-	if rule == nil {
+	if ok := state.SetRuleAutoSync(slug, req.RepoPath, req.AutoSync); !ok {
 		writeErr(w, 404, fmt.Errorf("rule %q not found in subscription %q — run Apply first", req.RepoPath, slug))
 		return
 	}
-	rule.AutoSync = req.AutoSync
 	if err := state.Save(cfg.Paths().State); err != nil {
 		writeErr(w, 500, err)
 		return
@@ -459,6 +639,8 @@ func (s *Server) handleSetAutoPullInterval(w http.ResponseWriter, r *http.Reques
 		writeErr(w, 400, fmt.Errorf("invalid interval %q — use off, 5m, 1h, 6h, 12h, or 24h", req.Interval))
 		return
 	}
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
 	cfg := s.getConfig()
 	newCfg := *cfg
 	newCfg.AutoPullInterval = req.Interval
@@ -492,7 +674,11 @@ func validatePushToken(ctx context.Context, token string) (login string, err err
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// SSRF-safe client — api.github.com resolves to public IPs, but the
+	// safe client is cheap insurance against a poisoned DNS that might
+	// redirect to a private range. Same posture as clonarr's outbound
+	// integrations.
+	client := netsec.NewSafeHTTPClient(10*time.Second, nil)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("github unreachable: %w", err)
@@ -571,7 +757,8 @@ func (s *Server) handleValidatePushToken(w http.ResponseWriter, r *http.Request)
 // ---- git remote setup ----
 
 type gitRemoteReq struct {
-	URL string `json:"url"`
+	URL         string `json:"url"`
+	DisplayName string `json:"display_name,omitempty"`
 }
 
 func (s *Server) handleSetGitRemote(w http.ResponseWriter, r *http.Request) {
@@ -580,26 +767,91 @@ func (s *Server) handleSetGitRemote(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err)
 		return
 	}
-	if req.URL == "" {
-		writeErr(w, 400, fmt.Errorf("url is required"))
+	if err := core.ValidateGitURL(req.URL); err != nil {
+		writeErr(w, 400, err)
 		return
 	}
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
 	cfg := s.getConfig()
 	if err := core.SetupGitRepo(r.Context(), cfg.Paths().Repo, req.URL); err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "ok", "url": req.URL})
+	// Persist display name in config.yml — survives a remote URL
+	// change and a disconnect/reconnect cycle. Trim whitespace so a
+	// stray space doesn't sneak into the YAML and look odd on the next
+	// load. Empty string clears the name (UI falls back to URL-derived).
+	newCfg := *cfg
+	newCfg.RepoDisplayName = strings.TrimSpace(req.DisplayName)
+	if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.mu.Lock()
+	s.cfg = &newCfg
+	s.mu.Unlock()
+	writeJSON(w, 200, map[string]any{
+		"status":       "ok",
+		"url":          req.URL,
+		"display_name": newCfg.RepoDisplayName,
+	})
+}
+
+// handleDeleteGitRemote disconnects the local share-repo from GitHub:
+// removes the origin remote, deletes the saved push token. The local
+// working tree, git history, and any exported rule files stay on
+// disk — only the "where to publish" link is severed. User can
+// reconnect by setting URL + token again.
+func (s *Server) handleDeleteGitRemote(w http.ResponseWriter, r *http.Request) {
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
+	cfg := s.getConfig()
+	if err := core.RemoveGitRemote(r.Context(), cfg.Paths().Repo); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	tokenPath := filepath.Join(filepath.Dir(s.cfgPath), "git-push-token")
+	if err := os.Remove(tokenPath); err != nil && !os.IsNotExist(err) {
+		writeErr(w, 500, fmt.Errorf("delete token file: %w", err))
+		return
+	}
+	// Clear the display name too — re-adding starts fresh. Surface any
+	// SaveConfig failure: the remote is already disconnected and the
+	// token deleted, so silently keeping the in-memory display name
+	// would leave the UI showing a label for a repo that's no longer
+	// configured. 500 lets the user retry once the underlying problem
+	// (disk full, permissions) is fixed.
+	if cfg.RepoDisplayName != "" {
+		newCfg := *cfg
+		newCfg.RepoDisplayName = ""
+		if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
+			writeErr(w, 500, fmt.Errorf("clear display name: %w", err))
+			return
+		}
+		s.mu.Lock()
+		s.cfg = &newCfg
+		s.mu.Unlock()
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 
 func (s *Server) handleGetGitRemote(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getConfig()
 	url, err := core.GetGitRemote(r.Context(), cfg.Paths().Repo)
 	if err != nil {
-		writeJSON(w, 200, map[string]any{"configured": false, "url": ""})
+		writeJSON(w, 200, map[string]any{
+			"configured":   false,
+			"url":          "",
+			"display_name": cfg.RepoDisplayName,
+		})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"configured": true, "url": url})
+	writeJSON(w, 200, map[string]any{
+		"configured":   true,
+		"url":          url,
+		"display_name": cfg.RepoDisplayName,
+	})
 }
 
 // ---- helper for the UI's link-to-existing dropdown ----

@@ -40,6 +40,13 @@ func CreateBackup(ctx context.Context, cfg *Config, client *QuiClient, instanceI
 	if instanceID <= 0 {
 		return "", 0, fmt.Errorf("invalid instance id %d", instanceID)
 	}
+	// Serialise concurrent CreateBackup calls for the same instance so
+	// two firings landing in the same second can't collide on the
+	// `<ts>.tmp` working dir or the final os.Rename. Different
+	// instances still run in parallel — see lockForInstanceBackup.
+	mu := lockForInstanceBackup(instanceID)
+	mu.Lock()
+	defer mu.Unlock()
 	rules, err := client.ListAutomations(ctx, instanceID)
 	if err != nil {
 		return "", 0, fmt.Errorf("list automations (instance %d): %w", instanceID, err)

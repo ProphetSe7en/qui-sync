@@ -193,22 +193,24 @@ func (s *ConsumerState) ListSubscriptionSlugs() []string {
 	return out
 }
 
-// AddSubscription registers a new subscription. Returns an error if slug
-// already exists. The rest of the fields (LastPull*, Rules) start empty.
-// targetCategory is optional — empty means "all categories".
-func (s *ConsumerState) AddSubscription(slug, url, branch string, auth SubscriptionAuth, targetCategory string) error {
+// AddSubscription registers a new subscription. Returns an error if
+// slug already exists. The rest of the fields (LastPull*, Rules) start
+// empty. targetCategory empty = "all categories"; targetInstanceID 0
+// = "no default" (user has to pick on first Plan).
+func (s *ConsumerState) AddSubscription(slug, url, branch string, auth SubscriptionAuth, targetCategory string, targetInstanceID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.Subscriptions[slug]; exists {
 		return fmt.Errorf("subscription %q already exists", slug)
 	}
 	s.Subscriptions[slug] = &SubscriptionStateData{
-		URL:            url,
-		Branch:         branch,
-		Auth:           auth,
-		AddedAt:        time.Now().UTC(),
-		TargetCategory: targetCategory,
-		Rules:          map[string]*SubRuleStateData{},
+		URL:              url,
+		Branch:           branch,
+		Auth:             auth,
+		AddedAt:          time.Now().UTC(),
+		TargetCategory:   targetCategory,
+		TargetInstanceID: targetInstanceID,
+		Rules:            map[string]*SubRuleStateData{},
 	}
 	return nil
 }
@@ -217,7 +219,7 @@ func (s *ConsumerState) AddSubscription(slug, url, branch string, auth Subscript
 // subscription in place. Slug is immutable (it's the clone-dir name).
 // URL change is allowed but the caller is responsible for invalidating
 // the on-disk clone if the new URL points elsewhere.
-func (s *ConsumerState) UpdateSubscription(slug, url, branch string, auth SubscriptionAuth, targetCategory string) error {
+func (s *ConsumerState) UpdateSubscription(slug, url, branch string, auth SubscriptionAuth, targetCategory string, targetInstanceID int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sub, exists := s.Subscriptions[slug]
@@ -228,6 +230,7 @@ func (s *ConsumerState) UpdateSubscription(slug, url, branch string, auth Subscr
 	sub.Branch = branch
 	sub.Auth = auth
 	sub.TargetCategory = targetCategory
+	sub.TargetInstanceID = targetInstanceID
 	return nil
 }
 
@@ -269,6 +272,46 @@ func (s *ConsumerState) SetRuleDecision(slug, repoPath string, instanceID, quiRu
 	r.LinkedAction = action
 	r.SortOrderOverride = sortOverride
 	return nil
+}
+
+// SetTargetInstanceID atomically sets the apply-target instance for a
+// subscription. Replaces the old pattern of `state.Subscription(slug)`
+// (snapshot copy with inner-lock release) followed by direct field
+// mutation, which leaked into a real data race against any concurrent
+// writer holding the state lock. Holding the write lock end-to-end
+// keeps reads + writes on Subscription pointers consistent.
+//
+// Silent no-op when the slug doesn't exist — callers that need a
+// specific error should check Subscription presence first.
+func (s *ConsumerState) SetTargetInstanceID(slug string, instanceID int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub, ok := s.Subscriptions[slug]
+	if !ok || sub == nil {
+		return
+	}
+	sub.TargetInstanceID = instanceID
+}
+
+// SetRuleAutoSync sets the auto-sync flag on an existing rule. Used by
+// ApplySync to record the user's "stage Auto on Apply" choice from the
+// Plan view, and by the inline auto-sync toggle endpoint for rules
+// that are already in state. Returns false when the rule isn't in
+// state so callers can map that to a 404 — auto-sync only makes sense
+// for rules with a recorded link.
+func (s *ConsumerState) SetRuleAutoSync(slug, repoPath string, autoSync bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub := s.subscriptionLocked(slug)
+	if sub == nil {
+		return false
+	}
+	r := sub.Rules[repoPath]
+	if r == nil {
+		return false
+	}
+	r.AutoSync = autoSync
+	return true
 }
 
 // RecordApply stamps the applied_sha and time on a rule after a successful

@@ -18,7 +18,7 @@ RUN go mod download
 
 COPY . .
 
-RUN wget -q -O cmd/server/web/static/cronstrue.min.js \
+RUN wget -q -O ui/static/js/cronstrue.min.js \
     "https://cdn.jsdelivr.net/npm/cronstrue@2.50.0/dist/cronstrue.min.js"
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/qui-sync-server ./cmd/server

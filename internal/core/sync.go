@@ -76,6 +76,12 @@ type SyncApplyDecision struct {
 	Action            string `json:"action"` // create_new | update_existing | skip
 	QuiRuleID         int    `json:"qui_rule_id,omitempty"`
 	SortOrderOverride *int   `json:"sort_order_override,omitempty"`
+	// AutoSync stages the auto-sync flag from the Plan view so a user
+	// who ticks Auto on a brand-new rule has it persist in one shot —
+	// Apply both creates the link and records the auto-sync intent.
+	// Pre-v0.4 the user had to Apply, then go back and tick Auto on
+	// the now-state-backed row. AutoSync defaults false (== unchanged).
+	AutoSync bool `json:"auto_sync,omitempty"`
 }
 
 // SyncApplyResult is the outcome.
@@ -444,6 +450,12 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 			out.QuiRuleID = ruleID
 			state.SetRuleDecision(slug, d.RepoPath, req.QuiInstanceID, ruleID, "update_existing", d.SortOrderOverride)
 			state.RecordApply(slug, d.RepoPath, ruleID, sha256String(rr.Raw))
+			// Always persist the auto-sync flag — both true AND false
+			// must take effect at Apply time, otherwise unticking Auto
+			// on a previously-auto rule via the Plan UI would silently
+			// keep the prior true value (the gated `if d.AutoSync` only
+			// covered the set-true direction).
+			state.SetRuleAutoSync(slug, d.RepoPath, d.AutoSync)
 			result.Created = append(result.Created, out)
 
 		case "update_existing":
@@ -480,6 +492,8 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 			out.QuiRuleID = d.QuiRuleID
 			state.SetRuleDecision(slug, d.RepoPath, req.QuiInstanceID, d.QuiRuleID, "update_existing", d.SortOrderOverride)
 			state.RecordApply(slug, d.RepoPath, d.QuiRuleID, sha256String(rr.Raw))
+			// Always persist (see create_new branch comment).
+			state.SetRuleAutoSync(slug, d.RepoPath, d.AutoSync)
 			result.Updated = append(result.Updated, out)
 
 		default:
