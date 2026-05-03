@@ -46,5 +46,13 @@ ENV PUID=99 \
     PGID=100 \
     UMASK=002
 
+# Healthcheck — hits the auth-public /api/health endpoint owned by
+# Server.RegisterRoutes. busybox wget ships with the Alpine base image
+# (no extra apk install needed). Port hardcoded to 6070 since CMD is too;
+# if a configurable port lands later, switch to ${PORT}-style template
+# matching clonarr's pattern.
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget -qO- http://localhost:6070/api/health || exit 1
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["--addr", ":6070", "--config", "/config/config.yml"]
