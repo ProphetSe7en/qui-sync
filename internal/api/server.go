@@ -182,6 +182,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/backups", s.handleListBackups)
 	mux.HandleFunc("POST /api/backup/restore", s.handleRestoreBackup)
 	mux.HandleFunc("PUT /api/subscriptions/{slug}/rules/auto-sync", s.handleSetRuleAutoSync)
+	mux.HandleFunc("PUT /api/subscriptions/{slug}/rules/decision", s.handleSetRuleDecision)
 	mux.HandleFunc("PUT /api/config/auto-pull-interval", s.handleSetAutoPullInterval)
 	mux.HandleFunc("PUT /api/config/push-token", s.handleSavePushToken)
 	mux.HandleFunc("POST /api/config/push-token/validate", s.handleValidatePushToken)
@@ -191,6 +192,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/config/git-remote", s.handleGetGitRemote)
 	mux.HandleFunc("DELETE /api/config/git-remote", s.handleDeleteGitRemote)
 	mux.HandleFunc("PUT /api/config/qui", s.handleUpdateQuiConfig)
+	mux.HandleFunc("DELETE /api/config/qui", s.handleDeleteQuiConfig)
+	mux.HandleFunc("POST /api/config/qui/test", s.handleTestQuiConfig)
 
 	// Backup schedules — full CRUD (replaces the v0.2 single PUT
 	// /api/config/backup). Each schedule is named, has its own cron,
@@ -201,6 +204,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/backup/schedules/{id}", s.handleDeleteSchedule)
 	mux.HandleFunc("POST /api/backup/schedules/{id}/run", s.handleRunSchedule)
 	mux.HandleFunc("PUT /api/backup/gitignored", s.handleSetBackupGitignored)
+	mux.HandleFunc("PUT /api/repo/archive-gitignored", s.handleSetArchiveGitignored)
 	mux.HandleFunc("GET /api/qui-instances", s.handleListQuiInstances)
 	mux.HandleFunc("POST /api/instances", s.handleAddInstance)
 	mux.HandleFunc("DELETE /api/instances/{id}", s.handleRemoveInstance)

@@ -622,6 +622,66 @@ func (s *Server) handleSetRuleAutoSync(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"repo_path": req.RepoPath, "auto_sync": req.AutoSync})
 }
 
+type setRuleDecisionReq struct {
+	RepoPath      string `json:"repo_path"`
+	QuiInstanceID int    `json:"qui_instance_id"`
+	Action        string `json:"action"`         // skip | create_new | update_existing
+	QuiRuleID     int    `json:"qui_rule_id,omitempty"` // required for update_existing
+}
+
+// handleSetRuleDecision persists a single rule's decision (skip / link /
+// create_new) immediately, without waiting for Apply. Lets the user
+// build up an exclude-list (skip decisions) across Plan refreshes
+// without losing their choices on every pull. Symmetric for un-skip:
+// the Include-again button on the "Excluded by you" Plan section calls
+// this with action=create_new to drop the rule back into the main
+// table; the next Plan refresh auto-matches by name as usual.
+//
+// Unlike SetRuleAutoSync, this creates the state entry if missing —
+// so a brand-new rule can be excluded before it has ever been Applied.
+func (s *Server) handleSetRuleDecision(w http.ResponseWriter, r *http.Request) {
+	var req setRuleDecisionReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.RepoPath == "" {
+		writeErr(w, 400, fmt.Errorf("repo_path is required"))
+		return
+	}
+	slug := r.PathValue("slug")
+	cfg := s.getConfig()
+	state := s.getConsumerState()
+	// Default qui_instance_id from the subscription's pre-bound target
+	// when the client didn't send one — saves the UI from having to
+	// know about the binding. 404 when the slug doesn't exist so the
+	// caller doesn't accidentally write an orphan state entry that the
+	// next Plan run silently drops (entry.QuiInstanceID==0 fails the
+	// instance match in PlanSync). Same shape as handleSetRuleAutoSync.
+	snap := state.SubscriptionSnapshot(slug)
+	if snap == nil {
+		writeErr(w, 404, fmt.Errorf("subscription %q not found", slug))
+		return
+	}
+	instanceID := req.QuiInstanceID
+	if instanceID == 0 {
+		instanceID = snap.TargetInstanceID
+	}
+	if err := state.SetRuleDecision(slug, req.RepoPath, instanceID, req.QuiRuleID, req.Action, nil); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if err := state.Save(cfg.Paths().State); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"repo_path":   req.RepoPath,
+		"action":      req.Action,
+		"qui_rule_id": req.QuiRuleID,
+	})
+}
+
 // ---- auto-pull interval ----
 
 type autoPullIntervalReq struct {

@@ -70,6 +70,20 @@ type SubRuleStateData struct {
 	// automatically on each pull that detects changes. When false
 	// (default), the rule requires manual Plan + Apply.
 	AutoSync bool `json:"auto_sync,omitempty"`
+	// DeactivatedBecauseRemoved: set true when auto-sync (or a manual
+	// Deactivate-now click) flipped the Qui rule's `enabled` field to
+	// false because the maintainer removed the file from the repo. We
+	// remember this for two reasons:
+	//
+	//   1. Idempotency — without it, every subsequent auto-sync tick
+	//      would try to deactivate the rule again (already-false → noop
+	//      from Qui's side, but pointless network traffic and notifs).
+	//   2. Re-add policy — if the maintainer re-adds the rule later
+	//      (mistake recovery or intentional restore), Plan can surface
+	//      it as "Deactivated by qui-sync — manually re-enable if you
+	//      want it active again", mirroring the conservative "new rules
+	//      are never auto-applied" rule. User stays in control.
+	DeactivatedBecauseRemoved bool `json:"deactivated_because_removed,omitempty"`
 }
 
 // DefaultPreservedFields lists the user-owned rule fields that survive
@@ -311,6 +325,43 @@ func (s *ConsumerState) SetRuleAutoSync(slug, repoPath string, autoSync bool) bo
 		return false
 	}
 	r.AutoSync = autoSync
+	return true
+}
+
+// MarkDeactivatedBecauseRemoved flips the per-rule flag that prevents
+// auto-sync from retrying a deactivate on every tick after the first
+// successful run. Returns false when the rule has no state entry — the
+// caller should treat that as "nothing to mark, surface no error".
+//
+// The companion ClearDeactivatedBecauseRemoved is called from the Plan
+// flow when the maintainer re-adds a previously-removed rule and the
+// user manually re-applies it — restores the rule to "normal" state so
+// future removals re-trigger the same flow.
+func (s *ConsumerState) MarkDeactivatedBecauseRemoved(slug, repoPath string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub := s.subscriptionLocked(slug)
+	r := sub.Rules[repoPath]
+	if r == nil {
+		return false
+	}
+	r.DeactivatedBecauseRemoved = true
+	return true
+}
+
+// ClearDeactivatedBecauseRemoved removes the marker. Called when a
+// previously-removed rule re-appears in the repo and the user manually
+// re-applies it — from that point on, the rule is "live" again, and a
+// future removal should re-trigger the standard Removed flow.
+func (s *ConsumerState) ClearDeactivatedBecauseRemoved(slug, repoPath string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub := s.subscriptionLocked(slug)
+	r := sub.Rules[repoPath]
+	if r == nil {
+		return false
+	}
+	r.DeactivatedBecauseRemoved = false
 	return true
 }
 

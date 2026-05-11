@@ -16,13 +16,14 @@ import (
 // ---- Plan types (server → client) ----
 
 // SyncPlan is the preview returned by PlanSync. UI renders the Rules
-// table and the Orphans list from this.
+// table, the Removed list, and the Orphans list from this.
 type SyncPlan struct {
-	SubscriptionSlug string           `json:"subscription_slug"`
-	QuiInstanceID    int              `json:"qui_instance_id"`
-	SourceSHA        string           `json:"source_sha"` // HEAD SHA of the subscription clone
-	Rules            []SyncPlanRule   `json:"rules"`
-	Orphans          []SyncPlanOrphan `json:"orphans"`
+	SubscriptionSlug string            `json:"subscription_slug"`
+	QuiInstanceID    int               `json:"qui_instance_id"`
+	SourceSHA        string            `json:"source_sha"` // HEAD SHA of the subscription clone
+	Rules            []SyncPlanRule    `json:"rules"`
+	Removed          []SyncPlanRemoved `json:"removed"`
+	Orphans          []SyncPlanOrphan  `json:"orphans"`
 }
 
 // SyncPlanRule describes what Apply would do with one repo rule.
@@ -56,11 +57,55 @@ type SyncPlanSuggestion struct {
 	Confidence string `json:"confidence,omitempty"` // "high" | "medium" | "low"
 }
 
-// SyncPlanOrphan: a rule that exists in Qui but not in the repo.
-// MVP doesn't touch them — v0.3 adds orphan_behavior.
+// SyncPlanOrphan: a rule that exists in Qui but not in the repo and was
+// never part of this subscription (the user's own local rule, or a
+// rule the user excluded via "skip"). qui-sync never touches these.
 type SyncPlanOrphan struct {
 	QuiRuleID int    `json:"qui_rule_id"`
 	Name      string `json:"name"`
+}
+
+// SyncPlanRemoved: a rule that this subscription previously applied,
+// but which the maintainer has now removed from the upstream repo —
+// the file is gone from the clone, yet state still records the link to
+// a live Qui rule. UI surfaces it in its own section so the user can
+// see the auto-deactivate decision (or kick it off manually for rules
+// without AutoSync).
+//
+// Distinct from Orphans, which mix in the user's own private rules
+// (never on a subscription) and explicit "skip" decisions. This list
+// only contains rules the user once said yes to applying.
+type SyncPlanRemoved struct {
+	// RepoPath is the stable key in state — "<category>/<slug>".
+	RepoPath string `json:"repo_path"`
+	// Category preserves the maintainer-side category at the time of
+	// the last apply. Useful for UI grouping/display.
+	Category string `json:"category"`
+	// Slug is the stable identifier the rule used in the repo.
+	Slug string `json:"slug"`
+	// LastName is the human-readable label shown to the user since
+	// the repo file is gone. Backfilled from the live Qui rule when
+	// the link is still alive; falls back to the slug when even the
+	// live rule has been deleted (v0.5 may add a LastName stash on
+	// state so the original name survives both removals).
+	LastName string `json:"last_name"`
+	// QuiRuleID is the live Qui rule id this state entry links to.
+	// 0 means the rule is no longer in Qui either (user deleted it
+	// themselves between applies) — UI should treat that as "nothing
+	// to deactivate" and offer to clear the state entry.
+	QuiRuleID int `json:"qui_rule_id,omitempty"`
+	// AutoSync mirrors the AutoSync flag from state — drives the
+	// default action shown in UI ("Will deactivate" vs "Manual review").
+	AutoSync bool `json:"auto_sync"`
+	// AlreadyDeactivated is true when state.DeactivatedBecauseRemoved
+	// is set, meaning qui-sync already flipped enabled=false on a prior
+	// tick. UI fades the row out and shows "Deactivated" badge.
+	AlreadyDeactivated bool `json:"already_deactivated"`
+	// CurrentlyEnabled mirrors the live Qui rule's enabled flag at
+	// plan-time. Lets the UI distinguish "we already deactivated and
+	// the user has not re-enabled" from "we already deactivated but the
+	// user re-enabled it later" — the latter is left alone.
+	CurrentlyEnabled bool `json:"currently_enabled"`
 }
 
 // ---- Apply types (client → server → client) ----
@@ -69,6 +114,14 @@ type SyncPlanOrphan struct {
 type SyncApplyRequest struct {
 	QuiInstanceID int                 `json:"qui_instance_id"`
 	Decisions     []SyncApplyDecision `json:"decisions"`
+	// DeactivateRemoved lists repo_paths from the SyncPlan.Removed
+	// section that the caller wants to deactivate in Qui this run.
+	// Each entry's state must have a valid QuiRuleID — the apply path
+	// fetches the live rule, flips enabled=false, and PUTs it back.
+	// Auto-sync builds this list from plan.Removed where AutoSync was
+	// true and AlreadyDeactivated was false; the manual UI populates
+	// it from the user's per-row "Deactivate now" clicks.
+	DeactivateRemoved []string `json:"deactivate_removed,omitempty"`
 }
 
 type SyncApplyDecision struct {
@@ -86,10 +139,11 @@ type SyncApplyDecision struct {
 
 // SyncApplyResult is the outcome.
 type SyncApplyResult struct {
-	Created []SyncApplyOutcome `json:"created"`
-	Updated []SyncApplyOutcome `json:"updated"`
-	Skipped []SyncApplyOutcome `json:"skipped"`
-	Failed  []SyncApplyOutcome `json:"failed"`
+	Created     []SyncApplyOutcome `json:"created"`
+	Updated     []SyncApplyOutcome `json:"updated"`
+	Skipped     []SyncApplyOutcome `json:"skipped"`
+	Failed      []SyncApplyOutcome `json:"failed"`
+	Deactivated []SyncApplyOutcome `json:"deactivated"`
 }
 
 type SyncApplyOutcome struct {
@@ -221,6 +275,7 @@ func listRepoRules(cloneDir string) ([]repoRule, error) {
 				return nil, err
 			}
 			var parsed struct {
+				Slug      string `json:"_slug"`
 				Name      string `json:"name"`
 				SortOrder int    `json:"sortOrder"`
 			}
@@ -229,10 +284,28 @@ func listRepoRules(cloneDir string) ([]repoRule, error) {
 				// required "name" field). Safely ignored.
 				continue
 			}
-			// Slug identity is derived from the rule name so state
-			// keys stay stable regardless of filesystem quirks in
-			// the filename.
-			slug := Slugify(parsed.Name)
+			// Prefer the maintainer-assigned _slug from the file
+			// payload — it stays stable across renames on the
+			// maintainer side, so a renamed rule maps back to the
+			// same subscriber-side state entry (and a same-Qui-rule
+			// "update_existing" instead of looking like a delete +
+			// create pair). Fall back to Slugify(name) when the
+			// field is missing — handles legacy maintainer builds
+			// (pre-_slug) and hand-curated rule files that omit it.
+			//
+			// Migration: existing subscriber state was keyed by
+			// Slugify(original_name). Maintainer's _slug equals
+			// Slugify(original_name) for non-collision cases (the
+			// UniqueSlug seed is the same Slugify call), so the new
+			// repo_path matches the old state-key in every common
+			// case. Collision-suffixed slugs (rare) will look like
+			// a fresh rule to existing subscribers; they get the
+			// "Removed by maintainer" + "Create new" pair once,
+			// then settle on the content-slug key going forward.
+			slug := parsed.Slug
+			if slug == "" {
+				slug = Slugify(parsed.Name)
+			}
 			out = append(out, repoRule{
 				RepoPath:  cat + "/" + slug,
 				Category:  cat,
@@ -348,10 +421,112 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 			continue
 		}
 
-		// 3) No match — create new.
+		// 3) No match — create new. Default AutoSync=true so the Plan
+		// UI's Auto checkbox reflects what auto-sync will actually do:
+		// a brand-new rule with no state gets auto-created as disabled
+		// on the next tick. A user who wants to opt out can untick Auto
+		// before clicking Apply (which persists state with AutoSync=false
+		// and stops auto-sync from re-creating the rule).
 		pr.Action = "create_new"
+		pr.AutoSync = true
 		pr.LinkSuggestion = SyncPlanSuggestion{MatchType: "none", Confidence: "high"}
 		plan.Rules = append(plan.Rules, pr)
+	}
+
+	// Removed-by-maintainer: state entries the user once applied (or
+	// linked) whose repo_path is no longer present in repoRules. We
+	// distinguish these from generic orphans because the user's intent
+	// for them is different — they once said "yes, sync this rule",
+	// and qui-sync owes them visibility (and optionally an automatic
+	// deactivate) on the rule's disappearance.
+	//
+	// repoRules has already been filtered by TargetCategory above, so
+	// the join here is naturally scoped to the subscription's apply
+	// scope. State entries for other categories are silently ignored —
+	// they don't belong to this subscription's auto-sync surface.
+	repoByPath := map[string]bool{}
+	for _, rr := range repoRules {
+		repoByPath[rr.RepoPath] = true
+	}
+	for repoPath, entry := range sub.Rules {
+		if entry == nil {
+			continue
+		}
+		if repoByPath[repoPath] {
+			continue // still in the repo, classified above
+		}
+		// Skip explicit "skip" decisions — the user already opted out
+		// before any apply ran. There's no Qui-side state to manage.
+		if entry.LinkedAction == "" || entry.LinkedAction == "skip" {
+			continue
+		}
+		// TargetCategory restricts auto-sync surface; mirror that here
+		// so the Removed section doesn't show entries the user won't
+		// have actioned anyway. Best-effort string match — Category
+		// lives in repoPath as the prefix before "/".
+		if sub.TargetCategory != "" {
+			slash := strings.IndexByte(repoPath, '/')
+			cat := repoPath
+			if slash >= 0 {
+				cat = repoPath[:slash]
+			}
+			if cat != sub.TargetCategory {
+				continue
+			}
+		}
+		// Skip entries linked to a different Qui instance — the user
+		// switched targets at some point. Auto-sync only touches the
+		// configured target instance; surfacing other-instance entries
+		// would imply we'd act on them, which we won't.
+		if entry.QuiInstanceID != 0 && entry.QuiInstanceID != instanceID {
+			continue
+		}
+		// Look up the live Qui state. If the rule no longer exists in
+		// Qui (user deleted it themselves), there's nothing left to
+		// deactivate — but we still surface it so the UI can offer to
+		// clear the now-dangling state entry. Distinguish via QuiRuleID
+		// presence + an Already=true marker below.
+		var liveEnabled bool
+		if live, ok := liveByID[entry.QuiRuleID]; ok {
+			liveEnabled = live.Enabled
+			// Claim the live rule so the Orphans loop below doesn't
+			// also list it. Without this, a maintainer-removed rule
+			// shows up in BOTH "Removed by maintainer" AND "Rules
+			// only in your Qui" — confusing for the user since both
+			// sections describe the same Qui rule from different angles.
+			usedLiveIDs[entry.QuiRuleID] = true
+		}
+		slug := ""
+		category := ""
+		if slash := strings.IndexByte(repoPath, '/'); slash >= 0 {
+			category = repoPath[:slash]
+			slug = repoPath[slash+1:]
+		} else {
+			slug = repoPath
+		}
+		plan.Removed = append(plan.Removed, SyncPlanRemoved{
+			RepoPath:           repoPath,
+			Category:           category,
+			Slug:               slug,
+			LastName:           "", // filled below from live Qui rule when alive, else slug
+			QuiRuleID:          entry.QuiRuleID,
+			AutoSync:           entry.AutoSync,
+			AlreadyDeactivated: entry.DeactivatedBecauseRemoved,
+			CurrentlyEnabled:   liveEnabled,
+		})
+	}
+	// Backfill LastName from live Qui rules (we have liveByID; the
+	// rule's name comes from there). If the live rule is also gone,
+	// fall back to the slug for human readability.
+	for i := range plan.Removed {
+		if rem := plan.Removed[i]; rem.QuiRuleID > 0 {
+			if live, ok := liveByID[rem.QuiRuleID]; ok {
+				plan.Removed[i].LastName = live.Name
+			}
+		}
+		if plan.Removed[i].LastName == "" {
+			plan.Removed[i].LastName = plan.Removed[i].Slug
+		}
 	}
 
 	// Orphans: live rules not claimed by any repo rule.
@@ -370,6 +545,9 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 			return plan.Rules[i].SortOrder < plan.Rules[j].SortOrder
 		}
 		return plan.Rules[i].RepoPath < plan.Rules[j].RepoPath
+	})
+	sort.Slice(plan.Removed, func(i, j int) bool {
+		return plan.Removed[i].RepoPath < plan.Removed[j].RepoPath
 	})
 	sort.Slice(plan.Orphans, func(i, j int) bool {
 		return plan.Orphans[i].Name < plan.Orphans[j].Name
@@ -456,6 +634,11 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 			// keep the prior true value (the gated `if d.AutoSync` only
 			// covered the set-true direction).
 			state.SetRuleAutoSync(slug, d.RepoPath, d.AutoSync)
+			// Clear the "deactivated by qui-sync" marker — if the user
+			// is re-creating a previously-removed rule, the state goes
+			// back to "live" so future removals re-trigger the standard
+			// Removed flow.
+			state.ClearDeactivatedBecauseRemoved(slug, d.RepoPath)
 			result.Created = append(result.Created, out)
 
 		case "update_existing":
@@ -494,11 +677,107 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 			state.RecordApply(slug, d.RepoPath, d.QuiRuleID, sha256String(rr.Raw))
 			// Always persist (see create_new branch comment).
 			state.SetRuleAutoSync(slug, d.RepoPath, d.AutoSync)
+			// Clear the "deactivated by qui-sync" marker — see create_new
+			// branch. Symmetric: a re-apply of any kind brings the rule
+			// back to a normal live state.
+			state.ClearDeactivatedBecauseRemoved(slug, d.RepoPath)
 			result.Updated = append(result.Updated, out)
 
 		default:
 			out.Error = "invalid action: " + d.Action
 			result.Failed = append(result.Failed, out)
+		}
+	}
+
+	// Deactivate-on-removal: rules whose maintainer-side file is gone
+	// but the consumer's Qui rule still exists. We flip enabled=false
+	// rather than delete — the user can always re-enable manually if
+	// they disagree with the maintainer's removal. Each entry's state
+	// gets DeactivatedBecauseRemoved=true so subsequent ticks don't
+	// keep retrying. Failures are tolerated per-rule.
+	if len(req.DeactivateRemoved) > 0 {
+		// Snapshot live state once so deactivate doesn't issue N list
+		// requests when called from a UI batch.
+		freshList, listErr := client.ListAutomations(ctx, req.QuiInstanceID)
+		if listErr != nil {
+			// A transient Qui API failure here used to silently fall
+			// through with an empty freshByID, which made EVERY entry
+			// in DeactivateRemoved match the "rule already gone from
+			// Qui" branch and get permanently marked as deactivated
+			// in state — no flip in Qui, no chance to retry on the
+			// next tick. Fail the whole batch instead: each entry is
+			// recorded as a per-rule failure with the list error so
+			// auto-sync logs it and the marker stays unset for retry.
+			for _, repoPath := range req.DeactivateRemoved {
+				result.Failed = append(result.Failed, SyncApplyOutcome{
+					RepoPath: repoPath,
+					Error:    "list automations: " + listErr.Error(),
+				})
+			}
+			if err := state.Save(cfg.Paths().State); err != nil {
+				return result, fmt.Errorf("save state: %w", err)
+			}
+			return result, nil
+		}
+		freshByID := map[int]Automation{}
+		for _, a := range freshList {
+			freshByID[a.ID] = a
+		}
+		subSnap := state.SubscriptionSnapshot(slug)
+		for _, repoPath := range req.DeactivateRemoved {
+			entry := subSnap.Rules[repoPath]
+			out := SyncApplyOutcome{RepoPath: repoPath}
+			if entry == nil || entry.QuiRuleID == 0 {
+				// No state link or no Qui rule id — nothing to act on,
+				// but record state so the UI knows we considered it.
+				out.Error = "no Qui rule link in state"
+				result.Failed = append(result.Failed, out)
+				continue
+			}
+			out.QuiRuleID = entry.QuiRuleID
+			live, ok := freshByID[entry.QuiRuleID]
+			if !ok {
+				// Rule is gone from Qui already (user deleted manually).
+				// Mark deactivated in state so it stops appearing in
+				// the Removed section; nothing to flip on Qui's side.
+				if !state.MarkDeactivatedBecauseRemoved(slug, repoPath) {
+					out.Error = "rule no longer in Qui, state update failed"
+					result.Failed = append(result.Failed, out)
+					continue
+				}
+				out.Name = repoPath // best label we have without a live rule
+				result.Deactivated = append(result.Deactivated, out)
+				continue
+			}
+			out.Name = live.Name
+			if !live.Enabled {
+				// Already disabled — record state and move on. No need
+				// to issue a no-op PUT.
+				state.MarkDeactivatedBecauseRemoved(slug, repoPath)
+				result.Deactivated = append(result.Deactivated, out)
+				continue
+			}
+			// Decode raw → flip enabled → PUT.
+			var data map[string]any
+			if err := json.Unmarshal(live.Raw, &data); err != nil {
+				out.Error = "decode rule: " + err.Error()
+				result.Failed = append(result.Failed, out)
+				continue
+			}
+			data["enabled"] = false
+			payload, err := json.Marshal(data)
+			if err != nil {
+				out.Error = "encode rule: " + err.Error()
+				result.Failed = append(result.Failed, out)
+				continue
+			}
+			if err := client.UpdateAutomation(ctx, req.QuiInstanceID, entry.QuiRuleID, payload); err != nil {
+				out.Error = err.Error()
+				result.Failed = append(result.Failed, out)
+				continue
+			}
+			state.MarkDeactivatedBecauseRemoved(slug, repoPath)
+			result.Deactivated = append(result.Deactivated, out)
 		}
 	}
 

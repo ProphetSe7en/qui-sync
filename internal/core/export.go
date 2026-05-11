@@ -137,14 +137,27 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			}
 
 			path := filepath.Join(paths.Repo, inst.Category, RuleFilename(r.Name)+".json")
+			renamed := entry != nil && entry.LastName != r.Name
 			oldPath := ""
 			if oldCategory != "" && oldCategory != inst.Category {
 				oldPath = filepath.Join(paths.Repo, oldCategory, RuleFilename(r.Name)+".json")
+			} else if renamed && RuleFilename(entry.LastName) != RuleFilename(r.Name) {
+				// Pure rename within the same category — the old filename
+				// is now orphaned on disk. Track it so the backup+remove
+				// flow below cleans it up the same way it cleans up the
+				// old-category file on a move. Without this, both the old
+				// and new filenames end up committed to the share-repo and
+				// pushed to GitHub on the next push.
+				//
+				// Filename equality check avoids a self-destructive remove
+				// when the rename only touches characters that RuleFilename
+				// strips (e.g. "Foo: Bar" → "Foo / Bar" both yield
+				// "Foo Bar.json"); in that case there is no orphan.
+				oldPath = filepath.Join(paths.Repo, inst.Category, RuleFilename(entry.LastName)+".json")
 			}
 
 			existing, existsErr := os.ReadFile(path)
 			exists := existsErr == nil
-			renamed := entry != nil && entry.LastName != r.Name
 			if exists && oldPath == "" {
 				// Compare semantic JSON (ignore whitespace).
 				if jsonEqual(existing, fileJSON) {
@@ -185,7 +198,26 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 							return nil, err
 						}
 						if err := os.Remove(oldPath); err != nil {
-							return nil, fmt.Errorf("remove old-category file %s: %w", oldPath, err)
+							return nil, fmt.Errorf("remove stale rule file %s: %w", oldPath, err)
+						}
+					}
+				}
+				// If the rule was previously archived (excluded → un-excluded,
+				// or removed-from-Qui → returned), clean up the archive copy.
+				// Without this, the rule would appear in BOTH movies/ (active)
+				// AND archive/movies/ (orphan from the prior exclude). The
+				// archive lookup uses entry.LastName + entry.Category so a
+				// rule renamed-while-archived still gets its old archive
+				// entry cleaned up correctly.
+				if entry != nil && entry.LastName != "" {
+					archiveCategory := inst.Category
+					if entry.Category != "" {
+						archiveCategory = entry.Category
+					}
+					archivePath := filepath.Join(paths.Repo, "archive", archiveCategory, RuleFilename(entry.LastName)+".json")
+					if _, err := os.Stat(archivePath); err == nil {
+						if err := os.Remove(archivePath); err != nil {
+							return nil, fmt.Errorf("remove stale archive on re-activation: %w", err)
 						}
 					}
 				}
@@ -241,11 +273,31 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			// state handling: deleted-from-Qui forgets the state entry; excluded
 			// keeps it so the slug + last-known-name survive an un-exclude.
 			excluded := state.IsExcluded(inst.QuiInstanceID, quiID)
+			path := filepath.Join(paths.Repo, entry.Category, RuleFilename(entry.LastName)+".json")
+			fileExists := false
+			if _, err := os.Stat(path); err == nil {
+				fileExists = true
+			}
+			// Only flag as Removed (and run the archive flow) when there's
+			// actually a file to remove. After a Reset to Remote the local
+			// repo can be wiped while state still has entries — without this
+			// guard, Preview would report "N archived" with no real change.
+			// For deleted-from-Qui rules with no local file, we still need
+			// to forget state so it doesn't accumulate stale entries.
+			if !fileExists {
+				if !excluded && !dryRun {
+					state.Forget(inst.QuiInstanceID, quiID)
+					removalsDirty = true
+				}
+				continue
+			}
 			diff.Removed = append(diff.Removed, DiffEntry{
 				Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
 			})
 			if !dryRun {
-				path := filepath.Join(paths.Repo, entry.Category, RuleFilename(entry.LastName)+".json")
+				// path + fileExists already computed above. Re-confirm the
+				// stat — race-safe in case the file disappeared between
+				// the check and now (rare, but cheap).
 				if _, err := os.Stat(path); err == nil {
 					// Local timestamped backup in /data/backups — not
 					// pushed to GitHub, safety net against UI mistakes.

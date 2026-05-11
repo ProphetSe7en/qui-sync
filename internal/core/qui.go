@@ -134,6 +134,53 @@ func (c *QuiClient) DeleteAutomation(ctx context.Context, instanceID, ruleID int
 	return err
 }
 
+// Deactivate flips a rule's enabled flag to false. Used by Subscribe-side
+// auto-sync when the maintainer removes a rule from the upstream repo —
+// we deactivate (preserve, can be re-enabled manually) rather than delete
+// (irreversible). The Qui rule and all its content stays intact.
+//
+// Qui's API has no PATCH endpoint and no single-rule GET — the only path
+// is fetch-the-list, mutate the raw JSON, PUT back. The List call is
+// already cached by callers (e.g. ApplySync passes liveByID), but this
+// helper takes the round-trip itself so single-call sites stay simple.
+// If a caller already holds the live raw JSON, it can construct the PUT
+// directly via UpdateAutomation.
+func (c *QuiClient) Deactivate(ctx context.Context, instanceID, ruleID int) error {
+	rules, err := c.ListAutomations(ctx, instanceID)
+	if err != nil {
+		return fmt.Errorf("list automations: %w", err)
+	}
+	var raw json.RawMessage
+	found := false
+	for _, r := range rules {
+		if r.ID == ruleID {
+			raw = r.Raw
+			found = true
+			break
+		}
+	}
+	if !found {
+		// Already gone from Qui — the user deleted the rule themselves,
+		// or it never existed. Treat as success: there is nothing left
+		// to deactivate, which is the desired end-state anyway.
+		return nil
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return fmt.Errorf("decode rule %d: %w", ruleID, err)
+	}
+	if enabled, ok := data["enabled"].(bool); ok && !enabled {
+		// Already disabled — no-op. Skip the round-trip.
+		return nil
+	}
+	data["enabled"] = false
+	payload, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("encode rule %d: %w", ruleID, err)
+	}
+	return c.UpdateAutomation(ctx, instanceID, ruleID, payload)
+}
+
 // ListAutomations fetches all automations for a given Qui instance.
 func (c *QuiClient) ListAutomations(ctx context.Context, instanceID int) ([]Automation, error) {
 	u := fmt.Sprintf("%s/api/instances/%d/automations", c.baseURL, instanceID)

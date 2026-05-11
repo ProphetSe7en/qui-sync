@@ -20,6 +20,17 @@ import (
 // folder placement.
 const backupGitignoreComment = "# qui-sync: hide full-instance backups from GitHub"
 
+// archiveGitignoreComment is the marker comment for the "Hide archived
+// rules from GitHub" toggle. Paired with the "archive/" entry so a
+// later read can recognise the qui-sync block and remove both halves
+// cleanly on toggle-off.
+const archiveGitignoreComment = "# qui-sync: hide archived rules from GitHub"
+
+// archiveGitignoreEntry is the constant ignore rule for the archive
+// folder. archive/ always lives at the share-repo root by design, so
+// the rule is constant — no per-config path computation needed.
+const archiveGitignoreEntry = "archive/"
+
 // EnsureBackupGitignore reconciles the share-repo's .gitignore with
 // cfg.BackupGitignored. Three cases:
 //
@@ -63,7 +74,44 @@ func EnsureBackupGitignore(cfg *Config) error {
 		return fmt.Errorf("read .gitignore: %w", err)
 	}
 
-	updated, changed := updateGitignoreEntry(existing, entry, cfg.BackupGitignored)
+	updated, changed := updateGitignoreEntry(existing, entry, backupGitignoreComment, cfg.BackupGitignored)
+	if !changed {
+		return nil
+	}
+	if err := os.MkdirAll(repoDir, 0o755); err != nil {
+		return err
+	}
+	tmp := giPath + ".tmp"
+	if err := os.WriteFile(tmp, updated, 0o644); err != nil {
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
+	return os.Rename(tmp, giPath)
+}
+
+// EnsureArchiveGitignore reconciles the share-repo's .gitignore with
+// cfg.ArchiveGitignored. Simpler than EnsureBackupGitignore because the
+// archive/ folder always lives at the share-repo root by design —
+// there's no out-of-repo edge case to handle.
+//
+// On=true: ensure "archive/" exists in .gitignore (paired with a
+// recognisable qui-sync comment so toggle-off can clean both halves).
+// On=false: ensure the entry and its comment are removed.
+//
+// Idempotent. The write itself is immediate but the user only sees the
+// effect on the next git commit (Commit export or any push that stages
+// .gitignore). That matches the BackupGitignored UX so the two toggles
+// behave consistently.
+func EnsureArchiveGitignore(cfg *Config) error {
+	paths := cfg.Paths()
+	repoDir := paths.Repo
+	giPath := filepath.Join(repoDir, ".gitignore")
+
+	existing, err := os.ReadFile(giPath)
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("read .gitignore: %w", err)
+	}
+
+	updated, changed := updateGitignoreEntry(existing, archiveGitignoreEntry, archiveGitignoreComment, cfg.ArchiveGitignored)
 	if !changed {
 		return nil
 	}
@@ -82,7 +130,11 @@ func EnsureBackupGitignore(cfg *Config) error {
 // and removes both when wanted=false. Returns the new content and a
 // bool indicating whether anything actually changed (so callers can
 // skip the write+rename when there's nothing to do).
-func updateGitignoreEntry(existing []byte, entry string, wanted bool) ([]byte, bool) {
+//
+// comment is the qui-sync marker that pairs with this entry — the two
+// callers (backup, archive) use different markers so a toggle-off for
+// one leaves the other intact even though both pass through here.
+func updateGitignoreEntry(existing []byte, entry, comment string, wanted bool) ([]byte, bool) {
 	lines := splitLines(existing)
 	hasEntry := false
 	hasComment := false
@@ -95,7 +147,7 @@ func updateGitignoreEntry(existing []byte, entry string, wanted bool) ([]byte, b
 				continue // drop on the wanted=false path
 			}
 		}
-		if trimmed == backupGitignoreComment {
+		if trimmed == comment {
 			hasComment = true
 			if !wanted {
 				continue
@@ -112,7 +164,7 @@ func updateGitignoreEntry(existing []byte, entry string, wanted bool) ([]byte, b
 			out = out[:len(out)-1]
 		}
 		if !hasComment {
-			out = append(out, backupGitignoreComment)
+			out = append(out, comment)
 		}
 		out = append(out, entry)
 	}

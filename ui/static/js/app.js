@@ -47,6 +47,10 @@ function quiSyncApp() {
     // Backup tab — schedules CRUD + global gitignored toggle.
     schedules: [],
     backupGitignored: true,
+    // Publish tab — "Hide archive/ from GitHub" toggle. Hydrated from
+    // /api/config; default false so first-time users get the archive
+    // published as part of the share-repo (the historical behaviour).
+    archiveGitignored: false,
     runningSchedule: {},  // scheduleID -> bool while a Run-now request is in flight
     scheduleModal: {
       open: false,
@@ -61,6 +65,7 @@ function quiSyncApp() {
     addInstanceOpen: false,
     addInstanceDraft: { qui_instance_id: 0, category: '' },
     availableQuiInstances: [],
+    disconnectingQui: false,
     // Sync tab
     subscriptions: [],
     expandedSub: {},
@@ -69,11 +74,23 @@ function quiSyncApp() {
     planBySub: {},
     quiRulesCache: {}, // instanceID -> [{qui_rule_id, name}]
     applying: {},
+    // Keyed by "<slug>:<repo_path>" so the per-row spinner on the
+    // "Deactivate now" button in the Removed-by-maintainer table flips
+    // independently per rule. Different rules can deactivate in
+    // parallel; the table doesn't lock as a whole.
+    deactivatingRule: {},
     planCategoryFilter: {},  // slug -> '' (all) or category name
     autoPullInterval: 'off',
     addSubOpen: false,
     addSubEditing: false, // true when the modal is editing an existing subscription
-    addSubDraft: { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '', target_instance_id: 0 },
+    // displayName is the free-form text the user types in the Name
+    // field; slug is derived from it on every keystroke and is what the
+    // backend actually stores (folder name on disk + path identifier
+    // in API URLs + state key). On edit, displayName mirrors the
+    // existing slug because the slug is locked once a subscription
+    // exists (renaming would mean moving the clone directory + state
+    // rewrite, which we don't support).
+    addSubDraft: { displayName: '', slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '', target_instance_id: 0 },
     addSubSSHKey: '', // non-empty after phase-1 generate; empty means phase-1 hasn't run yet
     addSubCategoryHints: [], // datalist options when editing — categories detected in the subscription's clone
     // Probe state — populated when the user clicks "Look up what's in
@@ -456,6 +473,9 @@ function quiSyncApp() {
         if (typeof this.config.backup_gitignored === 'boolean') {
           this.backupGitignored = this.config.backup_gitignored;
         }
+        if (typeof this.config.archive_gitignored === 'boolean') {
+          this.archiveGitignored = this.config.archive_gitignored;
+        }
       } catch (e) {
         this.toast('error', 'Failed to load config: ' + e.message);
       } finally {
@@ -484,7 +504,19 @@ function quiSyncApp() {
       this.testingQui = true;
       this.quiTestResult = '';
       try {
-        const data = await this.apiFetch('/api/instances');
+        // Test the DRAFT credentials, not the saved ones, so the user
+        // can verify a new URL/key before clicking Save. The backend
+        // probes Qui ad-hoc with the request-body creds (falling back
+        // to whatever is saved when a field is blank) and never
+        // persists anything from this call.
+        const data = await this.apiFetch('/api/config/qui/test', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: this.quiDraft.url || '',
+            api_key: this.quiDraft.apiKey || '',
+          }),
+        });
         this.quiTestResult = 'ok';
         this.toast('info', 'Connected to Qui — ' + data.length + ' instance' + (data.length === 1 ? '' : 's') + ' found.');
       } catch (e) {
@@ -498,6 +530,42 @@ function quiSyncApp() {
     resetQuiDraft() {
       if (!this.config) return;
       this.quiDraft = { url: this.config.qui.url || '', apiKey: '' };
+    },
+
+    // disconnectQui wipes the saved Qui URL + API key after a confirm
+    // step. Distinct from "Discard changes" (which only reverts the
+    // form fields). Subscriptions and export instances stay configured
+    // — they just become unusable until a Qui is reconnected.
+    async disconnectQui() {
+      const ok = await this.confirm({
+        title: 'Disconnect from Qui?',
+        body: 'qui-sync will forget the saved Qui URL and API key. ' +
+              'Your subscriptions and export instances will stay configured, ' +
+              'but Plan / Apply / Auto-sync / Backup all stop working until ' +
+              'you connect to a Qui again. You can re-enter the same details ' +
+              'later if you change your mind.',
+        confirmLabel: 'Disconnect',
+      });
+      if (!ok) return;
+      this.disconnectingQui = true;
+      try {
+        await this.apiFetch('/api/config/qui', { method: 'DELETE' });
+        this.toast('info', 'Disconnected from Qui.');
+        // Reload config so the UI clears URL / api_key_present / etc.
+        await this.loadConfig();
+        // Also clear the local draft so the form mirrors the new state.
+        this.quiDraft = { url: '', apiKey: '' };
+        this.quiTestResult = '';
+        this.quiTestError = '';
+        // Drop the cached Qui-side instance list so Subscribe dropdowns
+        // empty out — without this they'd still show stale instances
+        // until the next Save or page reload.
+        this.availableQuiInstances = [];
+      } catch (e) {
+        this.toast('error', 'Disconnect failed: ' + e.message);
+      } finally {
+        this.disconnectingQui = false;
+      }
     },
     // ---------- Backup schedules CRUD ----------
     //
@@ -766,6 +834,27 @@ function quiSyncApp() {
       }
     },
 
+    async saveArchiveGitignored() {
+      try {
+        await this.apiFetch('/api/repo/archive-gitignored', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ gitignored: this.archiveGitignored }),
+        });
+        this.toast(
+          'info',
+          this.archiveGitignored
+            ? 'archive/ will be hidden from GitHub on the next Commit export / Push.'
+            : 'archive/ will be published to GitHub on the next Commit export / Push.'
+        );
+        // Refresh the rule-diff so the user sees .gitignore staged in
+        // the pre-push review.
+        if (typeof this.loadRuleDiff === 'function') this.loadRuleDiff();
+      } catch (e) {
+        this.toast('error', 'Save failed: ' + e.message);
+      }
+    },
+
     // ---------- Schedule card display helpers ----------
 
     describeScheduleInstances(sched) {
@@ -842,6 +931,12 @@ function quiSyncApp() {
         });
         await this.loadConfig();
         await this.loadInstances();
+        // Refresh the Qui-side instance list so the Subscribe-tab
+        // pickers (Add subscription modal + per-row "Sync to"
+        // dropdown) get populated as soon as Qui is reachable. Without
+        // this, a pure subscriber who only just configured Qui sees
+        // empty dropdowns until they reload the page.
+        await this.loadAvailableQuiInstances();
         this.toast('info', 'Qui connection saved.');
       } catch (e) {
         this.toast('error', 'Save failed: ' + e.message);
@@ -960,6 +1055,26 @@ function quiSyncApp() {
 
     // ============ Sync tab methods ============
 
+    // loadAvailableQuiInstances populates the list of Qui instances
+    // available on the connected Qui server. Used by both Publish
+    // (Add export instance modal) AND Subscribe (target-instance picker
+    // in the Add/Edit subscription modal + the per-subscription "Sync to"
+    // dropdown). Loading here on Subscribe init means a pure subscriber
+    // — someone who never publishes anything — still gets a populated
+    // dropdown without first having to add an export-instance on Publish.
+    //
+    // Best-effort: a missing Qui connection just leaves the list empty,
+    // and the UI falls back to a "pick later when applying" placeholder.
+    async loadAvailableQuiInstances() {
+      try {
+        this.availableQuiInstances = await this.apiFetch('/api/qui-instances');
+      } catch (e) {
+        // Qui not configured yet, or unreachable — silent fallback so
+        // the rest of the Subscribe tab still renders.
+        this.availableQuiInstances = [];
+      }
+    },
+
     async loadSubscriptions() {
       try {
         this.subscriptions = await this.apiFetch('/api/subscriptions');
@@ -974,6 +1089,11 @@ function quiSyncApp() {
           if (!(sub.slug in this.applying)) this.applying[sub.slug] = false;
           if (!(sub.slug in this.planCategoryFilter)) this.planCategoryFilter[sub.slug] = '';
         }
+        // Pure subscribers (no export-instances configured) need Qui
+        // instances loaded so their "Apply to which Qui instance" + "Sync
+        // to" dropdowns aren't empty. Best-effort — silent fallback if
+        // Qui isn't configured yet.
+        this.loadAvailableQuiInstances();
       } catch (e) {
         this.toast('error', 'Load subscriptions: ' + e.message);
       }
@@ -995,7 +1115,7 @@ function quiSyncApp() {
     },
 
     openAddSubModal() {
-      this.addSubDraft = { slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '', target_instance_id: 0 };
+      this.addSubDraft = { displayName: '', slug: '', url: '', branch: 'main', auth_mode: 'public', token: '', target_category: '', target_instance_id: 0 };
       this.addSubSSHKey = '';
       this.addSubEditing = false;
       this.addSubCategoryHints = [];
@@ -1013,6 +1133,11 @@ function quiSyncApp() {
     // submitting blank tells the backend to keep the existing PAT.
     openEditSub(sub) {
       this.addSubDraft = {
+        // In edit mode, displayName equals the existing slug — the slug
+        // is locked (it's the on-disk clone dir + the state key) and we
+        // mirror it into displayName so the Name field shows something
+        // sensible even though the field itself is read-only here.
+        displayName: sub.slug,
         slug: sub.slug,
         url: sub.url,
         branch: sub.branch || 'main',
@@ -1096,11 +1221,38 @@ function quiSyncApp() {
       return 'Add';
     },
 
+    // slugifyName derives a filesystem-safe identifier from a free-form
+    // name. Mirrors the backend's `^[a-z0-9][a-z0-9_-]{0,62}$` rule.
+    // Called as the user types so the live preview below the field
+    // shows exactly what will be saved on disk + sent over the wire.
+    slugifyName(name) {
+      const s = (name || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      return s.slice(0, 63);
+    },
+
+    // updateSubDisplayName fires on every keystroke in the Name input
+    // (Add mode only — edit mode locks the slug). The user types whatever
+    // they want; we keep the raw displayName for the field's value and
+    // derive the slug on the side so the backend never sees the messy
+    // form. UI shows the derived slug as a preview below the input.
+    updateSubDisplayName(value) {
+      this.addSubDraft.displayName = value;
+      this.addSubDraft.slug = this.slugifyName(value);
+    },
+
     async addSubscription() {
       const d = this.addSubDraft;
       if (!d.slug || !d.url) return;
       if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(d.slug)) {
-        this.toast('error', 'Invalid name — use lowercase letters, digits, hyphens and underscores only');
+        // Only triggered when the derived slug is somehow empty or
+        // malformed (e.g. user typed only punctuation). UI hints at
+        // this via the live preview going blank, but a stricter
+        // backstop here keeps a broken POST out of the backend.
+        this.toast('error', 'Name produces an empty identifier — type at least one letter or digit.');
         return;
       }
 
@@ -1252,8 +1404,26 @@ function quiSyncApp() {
       const plan = this.planBySub[slug];
       if (!plan) return [];
       const cat = this.planCategoryFilter[slug];
-      if (!cat) return plan.rules;
-      return plan.rules.filter((r) => r.category === cat);
+      // Skip-action (excluded) rules live in their own section now —
+      // hide them from the main table so the user's curated list isn't
+      // re-cluttered with rules they've already said no to. The
+      // "Excluded by you" section renders them with an Include-again
+      // button when the user wants to bring one back.
+      const visibleAction = (r) => r.action !== 'skip';
+      if (!cat) return plan.rules.filter(visibleAction);
+      return plan.rules.filter((r) => r.category === cat && visibleAction(r));
+    },
+
+    // excludedPlanRules returns the skip-action rules for the per-plan
+    // "Excluded by you" section. Respects the category filter so the
+    // section stays in sync with what's visible in the main table.
+    excludedPlanRules(slug) {
+      const plan = this.planBySub[slug];
+      if (!plan) return [];
+      const cat = this.planCategoryFilter[slug];
+      const onlySkipped = (r) => r.action === 'skip';
+      if (!cat) return plan.rules.filter(onlySkipped);
+      return plan.rules.filter((r) => r.category === cat && onlySkipped(r));
     },
 
     // toggleAutoSync handles two cases:
@@ -1417,22 +1587,62 @@ function quiSyncApp() {
       this.toast('info', changed === 0 ? 'Already all set to Create new.' : 'Reset ' + changed + ' rule' + (changed === 1 ? '' : 's') + ' to Create new.');
     },
 
-    toggleRuleSkip(slug, rule) {
+    // toggleRuleSkip flips a rule between visible (create_new /
+    // update_existing) and excluded (skip). Persists the decision
+    // immediately via the rules/decision endpoint so the choice
+    // survives a Plan refresh — without that the user would have
+    // their exclude list reset every time they pulled, defeating
+    // the purpose of having an exclude list at all.
+    async toggleRuleSkip(slug, rule) {
+      const plan = this.planBySub[slug];
+      const instanceID = plan ? plan.qui_instance_id : 0;
+      // Compute next action + qui_rule_id locally first so we can
+      // optimistically update the UI before the round-trip lands.
+      let nextAction, nextQuiID = 0;
       if (rule.action === 'skip') {
-        // Un-skip: default back to what link_suggestion said.
         if (rule.link_suggestion && rule.link_suggestion.qui_rule_id) {
-          rule.action = 'update_existing';
-          rule.qui_rule_id = rule.link_suggestion.qui_rule_id;
+          nextAction = 'update_existing';
+          nextQuiID = rule.link_suggestion.qui_rule_id;
         } else {
-          rule.action = 'create_new';
+          nextAction = 'create_new';
         }
       } else {
-        rule.action = 'skip';
+        nextAction = 'skip';
       }
-      // Toggling Skip is an explicit decision — drop the auto-match
-      // breadcrumb so the source-hint reflects the new state.
-      rule.from_state = false;
+      const prev = { action: rule.action, qui_rule_id: rule.qui_rule_id, from_state: rule.from_state };
+      rule.action = nextAction;
+      rule.qui_rule_id = nextQuiID;
+      rule.from_state = true; // state now reflects this decision
       rule.link_suggestion = { match_type: 'manual', confidence: 'high' };
+      try {
+        await this.apiFetch('/api/subscriptions/' + slug + '/rules/decision', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo_path: rule.repo_path,
+            qui_instance_id: instanceID,
+            action: nextAction,
+            qui_rule_id: nextQuiID,
+          }),
+        });
+      } catch (e) {
+        // Roll back the optimistic UI so the row reverts to its
+        // previous classification — the user sees their click had no
+        // server-side effect rather than a phantom-applied change.
+        rule.action = prev.action;
+        rule.qui_rule_id = prev.qui_rule_id;
+        rule.from_state = prev.from_state;
+        this.toast('error', 'Save failed: ' + e.message);
+      }
+    },
+
+    // includePlanRule is the inverse of toggleRuleSkip for the
+    // "Excluded by you" section — flips a skip-action row back to
+    // create_new (or update_existing when an auto-match exists) and
+    // persists immediately so the row reappears in the main table on
+    // this Plan view without a refresh round.
+    async includePlanRule(slug, rule) {
+      await this.toggleRuleSkip(slug, rule);
     },
 
     setRulePriority(slug, rule, value) {
@@ -1460,24 +1670,50 @@ function quiSyncApp() {
       return ''; // none / unmatched — keep row visually quieter
     },
 
-    setRuleLink(slug, rule, value) {
+    // setRuleLink handles the per-rule dropdown change (Create new /
+    // Skip / Link to <existing-rule>). All three branches persist
+    // immediately via the rules/decision endpoint so dropdown picks
+    // behave the same way as the row-start checkbox — the user's choice
+    // survives a Plan refresh without requiring an Apply round.
+    async setRuleLink(slug, rule, value) {
+      const plan = this.planBySub[slug];
+      const instanceID = plan ? plan.qui_instance_id : 0;
+      let nextAction, nextQuiID = 0;
       if (value === 'create_new') {
-        rule.action = 'create_new';
-        rule.qui_rule_id = 0;
+        nextAction = 'create_new';
       } else if (value === 'skip') {
-        rule.action = 'skip';
+        nextAction = 'skip';
       } else if (value.startsWith('u:')) {
-        rule.action = 'update_existing';
-        rule.qui_rule_id = parseInt(value.slice(2), 10);
+        nextAction = 'update_existing';
+        nextQuiID = parseInt(value.slice(2), 10);
+      } else {
+        return; // unknown value, ignore
       }
-      // User picked something explicitly — drop the "remembered from
-      // last apply" or "auto-matched by name" hint so the row doesn't
-      // mislead them into thinking the new value also came from one of
-      // those sources. The hint clears; on next Apply the new choice
-      // is what gets persisted, and on the Plan after that the row
-      // will read "remembered from last apply" again.
-      rule.from_state = false;
+      const prev = { action: rule.action, qui_rule_id: rule.qui_rule_id, from_state: rule.from_state };
+      rule.action = nextAction;
+      rule.qui_rule_id = nextQuiID;
+      rule.from_state = true;
       rule.link_suggestion = { match_type: 'manual', confidence: 'high' };
+      try {
+        await this.apiFetch('/api/subscriptions/' + slug + '/rules/decision', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            repo_path: rule.repo_path,
+            qui_instance_id: instanceID,
+            action: nextAction,
+            qui_rule_id: nextQuiID,
+          }),
+        });
+      } catch (e) {
+        // Roll back so the row reverts visually to the prior state
+        // instead of pretending the change took effect.
+        rule.action = prev.action;
+        rule.qui_rule_id = prev.qui_rule_id;
+        rule.from_state = prev.from_state;
+        this.toast('error', 'Save failed: ' + e.message);
+        return;
+      }
     },
 
     openApplyModal(slug) {
@@ -1557,6 +1793,55 @@ function quiSyncApp() {
         this.toast('error', 'Apply failed: ' + e.message);
       } finally {
         this.applying[slug] = false;
+      }
+    },
+
+    // Deactivate a single "Removed by maintainer" rule via the apply
+    // endpoint (just the deactivate_removed slot, no decisions). Used
+    // by the "Deactivate now" button on rules that don't have AutoSync
+    // turned on — auto-sync handles the AutoSync ones automatically.
+    async deactivateRemoved(slug, rem) {
+      const plan = this.planBySub[slug];
+      if (!plan) return;
+      const key = slug + ':' + rem.repo_path;
+      this.deactivatingRule = { ...this.deactivatingRule, [key]: true };
+      try {
+        const result = await this.apiFetch('/api/subscriptions/' + slug + '/apply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            qui_instance_id: plan.qui_instance_id,
+            decisions: [],
+            deactivate_removed: [rem.repo_path],
+          }),
+        });
+        const nD = result.deactivated ? result.deactivated.length : 0;
+        const nF = result.failed ? result.failed.length : 0;
+        if (nF > 0) {
+          const first = result.failed[0] || {};
+          this.toast('error',
+            'Deactivate failed: ' + ((first.name || first.repo_path) + ' — ' + (first.error || 'unknown')),
+            12000);
+        } else if (nD > 0) {
+          // Distinguish the two outcomes the same endpoint produces:
+          // a real flip in Qui (currently_enabled was true) vs a state-
+          // only dismiss (rule was already off in Qui — we just marked
+          // it so the row drops out of the Removed section). The toast
+          // copy needs to match what actually happened or the user
+          // thinks something changed in Qui when it didn't.
+          const label = rem.last_name || rem.repo_path;
+          if (rem.currently_enabled) {
+            this.toast('info', 'Turned off: ' + label);
+          } else {
+            this.toast('info', 'Dismissed: ' + label);
+          }
+        }
+        // Refresh plan so the row updates to AlreadyDeactivated state.
+        await this.planSub(slug);
+      } catch (e) {
+        this.toast('error', 'Deactivate failed: ' + e.message);
+      } finally {
+        this.deactivatingRule = { ...this.deactivatingRule, [key]: false };
       }
     },
 

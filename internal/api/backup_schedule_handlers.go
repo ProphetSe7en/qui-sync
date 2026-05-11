@@ -373,3 +373,39 @@ func (s *Server) handleSetBackupGitignored(w http.ResponseWriter, r *http.Reques
 	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
+
+// handleSetArchiveGitignored toggles the "hide archive/ from GitHub"
+// flag. archive/ always lives inside the share-repo (by design), so
+// the .gitignore reconciliation always has an effect — there's no
+// out-of-repo no-op edge case to worry about.
+//
+// The write is immediate so a quick toggle reflects in the next git
+// status, but the user only sees the consumer-facing effect on the
+// next Commit export or Push to remote where .gitignore actually
+// lands in a commit.
+func (s *Server) handleSetArchiveGitignored(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Gitignored bool `json:"gitignored"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 256)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
+	cfg := s.getConfig()
+	newCfg := *cfg
+	newCfg.ArchiveGitignored = req.Gitignored
+	if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.mu.Lock()
+	s.cfg = &newCfg
+	s.mu.Unlock()
+	if err := core.EnsureArchiveGitignore(&newCfg); err != nil {
+		writeErr(w, 500, fmt.Errorf("update .gitignore: %w", err))
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}

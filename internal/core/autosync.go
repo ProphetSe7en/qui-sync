@@ -117,19 +117,44 @@ func (w *AutoSyncWorker) runOnce(ctx context.Context) {
 			continue
 		}
 
-		// Build decisions: only auto_sync=true rules that have a stored
-		// decision (from a previous manual apply). New rules and
-		// manual-only rules are skipped entirely.
+		// Build decisions for auto-apply this tick. Three categories
+		// of rule funnel in here:
+		//
+		//   1. State-backed rules with AutoSync=true: standard
+		//      auto-update flow — re-applied with PreservedFields
+		//      keeping the user's enabled/trackers/intervals.
+		//   2. State-backed rules with AutoSync=false: skipped (the
+		//      user has opted out of automatic updates for this rule).
+		//   3. Brand-new rules (no state): auto-CREATED in the user's
+		//      Qui with enabled=false. The user reviews and flips
+		//      enabled=true in Qui themselves. Default AutoSync=true
+		//      so future maintainer updates to the same rule also
+		//      flow through; user can opt out via Plan UI later.
+		//
+		// Explicit "skip" decisions on state-backed rules are also
+		// honoured — a user who said "no thanks" once doesn't get
+		// the rule auto-applied later just because the maintainer
+		// pushed an update to it.
 		var decisions []SyncApplyDecision
 		for _, pr := range plan.Rules {
-			if !pr.FromState {
-				continue // new rule, not seen before — manual only
-			}
 			entry := sub.Rules[pr.RepoPath]
-			if entry == nil || !entry.AutoSync {
+			if entry != nil && entry.LinkedAction == "skip" {
 				continue
 			}
-			if entry.LinkedAction == "skip" {
+			// Per-rule opt-out for state-backed rules.
+			if entry != nil && !entry.AutoSync {
+				continue
+			}
+			// Safety guard for new rules (no state yet): only let
+			// create_new through. PlanSync's match-by-name fallback
+			// can produce a non-state update_existing classification
+			// when the maintainer's repo carries a rule with the same
+			// NAME as one of the user's private Qui rules. Without
+			// this guard, auto-sync would overwrite the user's
+			// private rule with the maintainer's payload — they never
+			// opted in to sharing it. Brand-new rules (truly absent
+			// from Qui) still flow through as create_new.
+			if !pr.FromState && pr.Action != "create_new" {
 				continue
 			}
 			// Filter by target category if set.
@@ -140,6 +165,10 @@ func (w *AutoSyncWorker) runOnce(ctx context.Context) {
 				RepoPath:  pr.RepoPath,
 				Action:    pr.Action,
 				QuiRuleID: pr.QuiRuleID,
+				// Persist AutoSync=true on auto-created new rules so
+				// future maintainer changes also flow through without
+				// the user having to revisit the Plan UI.
+				AutoSync: true,
 				SortOrderOverride: func() *int {
 					if pr.SortOrderFrom == "override" {
 						v := pr.SortOrder
@@ -150,14 +179,28 @@ func (w *AutoSyncWorker) runOnce(ctx context.Context) {
 			})
 		}
 
-		if len(decisions) == 0 {
+		// Removed-by-maintainer: rules state once linked but the repo
+		// no longer carries. For each AutoSync entry that we haven't
+		// already flipped, queue a deactivate. The "AlreadyDeactivated"
+		// guard makes the operation idempotent across ticks so we don't
+		// spam Qui with no-op PUTs or fire duplicate notifications.
+		var deactivate []string
+		for _, rem := range plan.Removed {
+			if !rem.AutoSync || rem.AlreadyDeactivated {
+				continue
+			}
+			deactivate = append(deactivate, rem.RepoPath)
+		}
+
+		if len(decisions) == 0 && len(deactivate) == 0 {
 			log.Printf("[auto-sync] %s: pulled %s, no auto-sync rules with changes", slug, newSHA[:7])
 			continue
 		}
 
 		result, err := ApplySync(ctx, cfg, client, state, slug, SyncApplyRequest{
-			QuiInstanceID: sub.TargetInstanceID,
-			Decisions:     decisions,
+			QuiInstanceID:     sub.TargetInstanceID,
+			Decisions:         decisions,
+			DeactivateRemoved: deactivate,
 		})
 		if err != nil {
 			log.Printf("[auto-sync] apply %s: %v", slug, err)
@@ -167,6 +210,12 @@ func (w *AutoSyncWorker) runOnce(ctx context.Context) {
 		nC := len(result.Created)
 		nU := len(result.Updated)
 		nF := len(result.Failed)
-		log.Printf("[auto-sync] %s: %d created, %d updated, %d failed", slug, nC, nU, nF)
+		nD := len(result.Deactivated)
+		log.Printf("[auto-sync] %s: %d created, %d updated, %d deactivated, %d failed", slug, nC, nU, nD, nF)
+		// Notifications for deactivations land in v0.5 with the proper
+		// agents pattern from docs/notification-agents-pattern.md —
+		// don't add a one-off Discord call here. Users see the result
+		// via the Plan UI "Deactivated"/"Re-enabled" badges plus the
+		// server log line above; that's enough for v0.4 ship.
 	}
 }

@@ -48,6 +48,9 @@ func main() {
 	if err := core.EnsureBackupGitignore(cfg); err != nil {
 		log.Printf("backup .gitignore reconcile (continuing): %v", err)
 	}
+	if err := core.EnsureArchiveGitignore(cfg); err != nil {
+		log.Printf("archive .gitignore reconcile (continuing): %v", err)
+	}
 
 	staticFS, err := resolveStatic(*webDir)
 	if err != nil {

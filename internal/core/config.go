@@ -34,6 +34,17 @@ type Config struct {
 	// publish backups since the backups-full directory is shared by all.
 	BackupGitignored bool `yaml:"backup_gitignored,omitempty"`
 
+	// ArchiveGitignored is the "hide archived rules from GitHub" toggle.
+	// archive/ lives INSIDE the share-repo (always, by definition), so
+	// when this is on we write an "archive/" entry to .gitignore. Users
+	// who treat the archive as a private soft-delete record (and don't
+	// want consumers to see the history) flip this on; users who want
+	// the archive published as part of the canonical share-repo leave
+	// it off (the default). Toggle applies on the next Commit export or
+	// Push to remote — the gitignore write itself is immediate but only
+	// takes effect when staged in the next commit.
+	ArchiveGitignored bool `yaml:"archive_gitignored,omitempty"`
+
 	// RepoDisplayName is the friendly label shown in the "Where to
 	// publish" card on the Publish tab. Optional — when blank the UI
 	// derives a label from the URL (last path segment minus .git).

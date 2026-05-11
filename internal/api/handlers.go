@@ -45,6 +45,7 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		"strip_fields":       cfg.StripFields,
 		"backup_schedules":   cfg.BackupSchedules,
 		"backup_gitignored":  cfg.BackupGitignored,
+		"archive_gitignored": cfg.ArchiveGitignored,
 		"auto_pull_interval": cfg.AutoPullInterval,
 		"repo_display_name":  cfg.RepoDisplayName,
 	}
@@ -289,6 +290,99 @@ func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	s.cfg = &newCfg
 	s.mu.Unlock()
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+// handleTestQuiConfig probes a Qui server with the draft URL + API key
+// in the request body — does NOT persist anything. Lets the user verify
+// connectivity before clicking Save, which is a more natural flow than
+// "save first, then test, then re-save if wrong" (especially when the
+// new URL/key is broken — saving a broken config flips the rest of the
+// UI into "Qui unreachable" state before the user knows whether they
+// typed wrong credentials).
+//
+// Both fields are optional. Empty url falls back to the saved URL;
+// empty api_key falls back to the saved key (so the "Leave blank to
+// keep current key" placeholder behaves predictably when the user
+// only tweaks the URL).
+func (s *Server) handleTestQuiConfig(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URL    string `json:"url"`
+		APIKey string `json:"api_key"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	cfg := s.getConfig()
+	url := strings.TrimSpace(req.URL)
+	if url == "" {
+		url = cfg.Qui.URL
+	}
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" {
+		// Fall back to whatever's currently configured — the resolved
+		// key (inline or file-backed) gives us the actual secret.
+		resolved, err := cfg.ResolveAPIKey()
+		if err == nil {
+			apiKey = resolved
+		}
+	}
+	if url == "" {
+		writeErr(w, 400, fmt.Errorf("url is required (no draft URL and no saved URL)"))
+		return
+	}
+	client := core.NewQuiClient(url, apiKey)
+	instances, err := client.ListInstances(r.Context())
+	if err != nil {
+		writeErr(w, 502, err)
+		return
+	}
+	out := make([]quiInstanceInfo, 0, len(instances))
+	for _, qi := range instances {
+		out = append(out, quiInstanceInfo{ID: qi.ID, Name: qi.Name})
+	}
+	writeJSON(w, 200, out)
+}
+
+// handleDeleteQuiConfig clears the saved Qui URL + API key so the user
+// can re-enter different connection details from scratch. Used by the
+// "Disconnect" button in the Qui-connection panel. Idempotent: safe to
+// call when no Qui is configured.
+//
+// We also delete the api-key file on disk when it points inside our
+// config directory — leaving a stale key would let a later
+// re-Connect inherit the previous secret without the user explicitly
+// providing one. Files outside our config dir (a user-pointed path) are
+// left alone: the user owns those paths and we don't want to delete
+// them on their behalf.
+func (s *Server) handleDeleteQuiConfig(w http.ResponseWriter, r *http.Request) {
+	s.cfgWriteMu.Lock()
+	defer s.cfgWriteMu.Unlock()
+	cfg := s.getConfig()
+	newCfg := *cfg
+
+	oldKeyFile := newCfg.Qui.APIKeyFile
+	newCfg.Qui.URL = ""
+	newCfg.Qui.APIKey = ""
+	newCfg.Qui.APIKeyFile = ""
+
+	if err := core.SaveConfig(s.cfgPath, &newCfg); err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	s.mu.Lock()
+	s.cfg = &newCfg
+	s.mu.Unlock()
+
+	if oldKeyFile != "" {
+		// Only clear keys we ourselves manage (inside the config dir).
+		// External paths the user provided are left untouched.
+		cfgDir := filepath.Dir(s.cfgPath)
+		if filepath.Dir(oldKeyFile) == cfgDir {
+			_ = os.Remove(oldKeyFile) // best-effort
+		}
+	}
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 

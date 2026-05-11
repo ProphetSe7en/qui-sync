@@ -460,6 +460,23 @@
         <button class="btn" @click="loadRepoStatus()" :disabled="loadingRepoStatus">Refresh</button>
       </div>
       <div class="panel-body">
+        <!-- Publish-side option that also gates Commit export (since
+             that's the step where .gitignore lands in a commit). When
+             on, archive/ is added to .gitignore so the soft-delete
+             history stays local instead of going to GitHub. Persists
+             across sessions. -->
+        <div style="padding-bottom:12px; margin-bottom:12px; border-bottom:1px solid var(--border)">
+          <label style="display:flex; align-items:center; gap:8px">
+            <input type="checkbox" x-model="archiveGitignored" @change="saveArchiveGitignored()">
+            <span>Hide <code>archive/</code> folder from GitHub</span>
+          </label>
+          <p class="dim" style="font-size:var(--font-xs); margin-top:4px; line-height:1.5">
+            Excluded rules and rules you've removed are kept locally under <code>&lt;repo&gt;/archive/</code>.
+            With this on, qui-sync adds <code>archive/</code> to <code>.gitignore</code> so the soft-delete history
+            stays private. The change takes effect on your next Commit export or Push to remote.
+            Setting persists until you change it.
+          </p>
+        </div>
         <template x-if="repoStatus">
           <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap">
             <div style="flex:1; min-width:200px">
@@ -1099,12 +1116,23 @@
             </div>
           </div>
         </div>
-        <div style="margin-top:12px; display:flex; gap:8px; align-items:center">
+        <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
           <button class="btn btn-primary" @click="saveQuiConfig()" :disabled="loading.config">Save</button>
-          <button class="btn" @click="resetQuiDraft()">Reset</button>
+          <button class="btn" @click="resetQuiDraft()"
+                  title="Discard unsaved changes in the URL and API key fields, reverting them to whatever is currently saved.">
+            Discard changes
+          </button>
           <button class="btn" @click="testQuiConnection()" :disabled="testingQui">Test connection</button>
           <span x-show="quiTestResult === 'ok'" style="color:var(--accent-green); font-size:var(--font-sm)">● Connected</span>
           <span x-show="quiTestResult === 'fail'" style="color:var(--accent-red); font-size:var(--font-sm)" x-text="quiTestError"></span>
+          <span style="flex:1"></span>
+          <button class="btn btn-danger" @click="disconnectQui()"
+                  x-show="config?.qui?.url"
+                  :disabled="disconnectingQui"
+                  title="Remove the saved Qui URL and API key. Your subscriptions and export instances stay configured but won't be usable until you connect to a Qui again.">
+            <span x-show="!disconnectingQui">Disconnect</span>
+            <span x-show="disconnectingQui">Disconnecting…</span>
+          </button>
         </div>
       </div>
     </div>
@@ -1129,8 +1157,13 @@
         <p class="dim" style="font-size:var(--font-xs); margin-top:8px; line-height:1.5">
           When enabled, qui-sync pulls all subscriptions on this interval and
           auto-applies changes to rules marked with the "Auto" checkbox in the
-          Plan view. Rules without Auto stay manual — you apply them yourself.
-          New rules from the repo are never auto-applied.
+          Plan view. Rules without Auto (or explicitly skipped) are left alone —
+          you apply or update them yourself.
+          <br><br>
+          <b>New rules from the maintainer are auto-created in your Qui as
+          disabled.</b> They show up in your automations list so you can review
+          and turn them on when you're ready — qui-sync never enables a rule
+          on its own.
           <br><br>
           Auto-sync only runs for subscriptions that have an <b>Apply target</b>
           set (Edit subscription → Apply to which Qui instance). Subscriptions
@@ -1153,38 +1186,6 @@
       </div>
     </div>
 
-    <!-- Add-instance modal -->
-    <div class="modal-backdrop" x-show="addInstanceOpen" @keydown.escape.window="addInstanceOpen = false"
-         x-transition.opacity style="display:none">
-      <div class="modal" @click.stop>
-        <div class="modal-title">Add export instance</div>
-        <div class="modal-body">
-          <p class="dim" style="font-size:var(--font-sm); margin-bottom:16px">
-            Pick a Qui instance to track. Rules from this instance will be exported
-            to the specified folder in the share-repo.
-          </p>
-          <div class="form-grid">
-            <label>Qui instance</label>
-            <select class="input" x-model.number="addInstanceDraft.qui_instance_id">
-              <option :value="0">— select —</option>
-              <template x-for="qi in availableQuiInstances" :key="qi.id">
-                <option :value="qi.id" :disabled="qi.configured"
-                        x-text="qi.name + ' (#' + qi.id + ')' + (qi.configured ? ' — already added' : '')"></option>
-              </template>
-            </select>
-            <label>Repo folder</label>
-            <input class="input" x-model="addInstanceDraft.category"
-                   placeholder="e.g. movies"
-                   pattern="^[a-z0-9][a-z0-9_-]{0,62}$">
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button class="btn" @click="addInstanceOpen = false">Cancel</button>
-          <button class="btn btn-primary" @click="addInstance()"
-                  :disabled="!addInstanceDraft.qui_instance_id || !addInstanceDraft.category">Add</button>
-        </div>
-      </div>
-    </div>
   </section>
 
   <!-- SUBSCRIBE TAB -->
@@ -1215,7 +1216,7 @@
           <br>
           &nbsp;&nbsp;• <b>Match by name</b> — auto-links every repo rule to your existing Qui rule with the same name (case-insensitive). Use this when you've already got rules with matching names in Qui.
           <br>
-          &nbsp;&nbsp;• <b>Set all to Create new</b> — flips every rule to "create as new" if you'd rather start clean and reorganise after.
+          &nbsp;&nbsp;• <b>Create new for all</b> — flips every rule to "create as new" if you'd rather start clean and reorganise after.
           <br>
           You can override any individual decision in the table before applying.
           <br>
@@ -1268,9 +1269,9 @@
                   <select class="input" style="margin-left:8px"
                           x-model.number="selectedInstanceBySub[sub.slug]">
                     <option :value="0">— select instance —</option>
-                    <template x-for="i in instances" :key="i.qui_instance_id">
-                      <option :value="i.qui_instance_id"
-                              x-text="i.qui_name + ' (#' + i.qui_instance_id + ')'"></option>
+                    <template x-for="qi in availableQuiInstances" :key="qi.id">
+                      <option :value="qi.id"
+                              x-text="qi.name + ' (#' + qi.id + ')'"></option>
                     </template>
                   </select>
                 </label>
@@ -1304,6 +1305,8 @@
                     <span class="dim" style="margin-left:auto; font-size:var(--font-xs)">
                       <span x-text="filteredPlanRules(sub.slug).length"></span> of
                       <span x-text="planBySub[sub.slug].rules.length"></span> rules
+                      <span x-show="excludedPlanRules(sub.slug).length"
+                            x-text="' · ' + excludedPlanRules(sub.slug).length + ' excluded'"></span>
                       <span x-show="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length"
                             x-text="' · ' + ((planBySub[sub.slug].orphans || []).length) + ' in Qui only'"></span>
                       <span x-show="planBySub[sub.slug].source_sha"
@@ -1395,6 +1398,127 @@
                     </tbody>
                   </table>
 
+                  <!-- Excluded by you: rules the user has marked Skip. They live
+                       in state with LinkedAction=skip so the choice survives
+                       Plan refreshes and pulls. Include-again flips the action
+                       back to create_new (the dropdown can then promote to
+                       update_existing if the user prefers). -->
+                  <template x-if="excludedPlanRules(sub.slug).length">
+                    <div style="padding:16px; border-top:1px solid var(--border)">
+                      <div style="font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; color:var(--text-secondary)">
+                        Excluded by you (<span x-text="excludedPlanRules(sub.slug).length"></span>)
+                      </div>
+                      <div class="dim" style="font-size:var(--font-xs); margin-bottom:10px; line-height:1.5">
+                        Rules you've chosen not to use from this subscription. They stay out of the main list
+                        even after a Pull — qui-sync remembers your choice. Click <b>Include again</b> to bring
+                        one back into the main table for review.
+                      </div>
+                      <table class="table" style="margin-top:6px">
+                        <tbody>
+                          <template x-for="rule in excludedPlanRules(sub.slug)" :key="rule.repo_path">
+                            <tr style="opacity:0.75">
+                              <td>
+                                <div x-text="rule.name"></div>
+                                <div class="dim" style="font-family:var(--font-mono); font-size:var(--font-xs)"
+                                     x-text="rule.repo_path"></div>
+                              </td>
+                              <td style="width:140px; text-align:right">
+                                <button class="btn btn-sm" @click="includePlanRule(sub.slug, rule)"
+                                        title="Move this rule back into the main Plan list. It will be classified by the standard auto-match flow on the next refresh.">
+                                  Include again
+                                </button>
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
+                  <!-- Removed by maintainer: state remembers a link to a Qui rule
+                       whose source file is no longer in the upstream repo. Auto-sync
+                       rules get the badge "Will deactivate on next sync"; non-Auto
+                       rules expose a manual "Deactivate now" button. AlreadyDeactivated
+                       entries are dimmed with "Deactivated" badge. -->
+                  <template x-if="planBySub[sub.slug].removed && planBySub[sub.slug].removed.length">
+                    <div style="padding:16px; border-top:1px solid var(--border)">
+                      <div style="font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; color:var(--text-warn, #d97706)">
+                        Removed by maintainer (<span x-text="planBySub[sub.slug].removed.length"></span>)
+                      </div>
+                      <div class="dim" style="font-size:var(--font-xs); margin-bottom:10px; line-height:1.5">
+                        These rules were applied earlier but the maintainer has now removed them from the upstream repo.
+                        Rules with <b>Auto</b> on will be turned off automatically on the next auto-sync.
+                        The rule itself stays in your Qui — only its on/off switch flips.
+                        Rules without Auto stay untouched until you click <b>Turn off now</b>.
+                      </div>
+                      <table class="table" style="margin-top:6px">
+                        <thead>
+                          <tr>
+                            <th>Rule</th>
+                            <th style="width:140px">Status</th>
+                            <th style="width:120px">Auto-sync</th>
+                            <th style="width:140px"></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <template x-for="rem in planBySub[sub.slug].removed" :key="rem.repo_path">
+                            <tr :style="rem.already_deactivated ? 'opacity:0.6' : ''">
+                              <td>
+                                <div x-text="rem.last_name"></div>
+                                <div class="dim" style="font-family:var(--font-mono); font-size:var(--font-xs)"
+                                     x-text="rem.repo_path"></div>
+                              </td>
+                              <td>
+                                <template x-if="rem.already_deactivated && !rem.currently_enabled">
+                                  <span class="badge">DEACTIVATED</span>
+                                </template>
+                                <template x-if="rem.already_deactivated && rem.currently_enabled">
+                                  <span class="badge badge-amber" title="You re-enabled this rule manually in Qui after qui-sync deactivated it. Auto-sync will not touch it again.">RE-ENABLED</span>
+                                </template>
+                                <template x-if="!rem.already_deactivated && rem.qui_rule_id === 0">
+                                  <span class="badge" title="The rule is gone from your Qui too — only the state link remains.">NOT IN QUI</span>
+                                </template>
+                                <template x-if="!rem.already_deactivated && rem.qui_rule_id > 0 && !rem.currently_enabled">
+                                  <span class="badge" title="Already disabled in Qui — qui-sync will record the deactivate state on the next sync.">ALREADY OFF</span>
+                                </template>
+                                <template x-if="!rem.already_deactivated && rem.qui_rule_id > 0 && rem.currently_enabled && rem.auto_sync">
+                                  <span class="badge badge-amber">WILL DEACTIVATE</span>
+                                </template>
+                                <template x-if="!rem.already_deactivated && rem.qui_rule_id > 0 && rem.currently_enabled && !rem.auto_sync">
+                                  <span class="badge">MANUAL</span>
+                                </template>
+                              </td>
+                              <td style="text-align:center">
+                                <span x-show="rem.auto_sync" class="dim" style="font-size:var(--font-xs)">on</span>
+                                <span x-show="!rem.auto_sync" class="dim" style="font-size:var(--font-xs)">off</span>
+                              </td>
+                              <td>
+                                <button class="btn btn-sm"
+                                        x-show="!rem.already_deactivated && rem.qui_rule_id > 0 && rem.currently_enabled"
+                                        :disabled="deactivatingRule[sub.slug + ':' + rem.repo_path]"
+                                        @click="deactivateRemoved(sub.slug, rem)"
+                                        title="Turn this rule off in Qui now. The rule stays in your Qui list — you can turn it back on yourself any time.">
+                                  <span x-show="!deactivatingRule[sub.slug + ':' + rem.repo_path]">Turn off now</span>
+                                  <span x-show="deactivatingRule[sub.slug + ':' + rem.repo_path]">…</span>
+                                </button>
+                                <button class="btn btn-sm"
+                                        x-show="!rem.already_deactivated && rem.qui_rule_id > 0 && !rem.currently_enabled"
+                                        :disabled="deactivatingRule[sub.slug + ':' + rem.repo_path]"
+                                        @click="deactivateRemoved(sub.slug, rem)"
+                                        title="The rule is already off in your Qui. Click to dismiss this row — qui-sync will stop showing it here.">
+                                  <span x-show="!deactivatingRule[sub.slug + ':' + rem.repo_path]">Dismiss</span>
+                                  <span x-show="deactivatingRule[sub.slug + ':' + rem.repo_path]">…</span>
+                                </button>
+                                <!-- RE-ENABLED has no action yet — needs a forget-link
+                                     state op in v0.5. Row sticks as informational. -->
+                              </td>
+                            </tr>
+                          </template>
+                        </tbody>
+                      </table>
+                    </div>
+                  </template>
+
                   <template x-if="planBySub[sub.slug].orphans && planBySub[sub.slug].orphans.length">
                     <div style="padding:16px">
                       <div class="dim" style="font-size:var(--font-xs); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px">
@@ -1434,10 +1558,25 @@
       <div class="modal-body">
         <div class="form-grid">
           <label>Name</label>
-          <input class="input" x-model="addSubDraft.slug" placeholder="e.g. prophet-movies, my-tv-setup"
-                 autocomplete="off" spellcheck="false"
-                 :disabled="addSubSSHKey.length > 0 || addSubEditing"
-                 :title="addSubEditing ? 'Name is fixed once a subscription exists — remove and re-add to rename' : ''">
+          <div>
+            <input class="input" :value="addSubDraft.displayName"
+                   @input="updateSubDisplayName($event.target.value)"
+                   placeholder="e.g. Prophet's Movies"
+                   autocomplete="off" spellcheck="false" style="width:100%"
+                   :disabled="addSubSSHKey.length > 0 || addSubEditing"
+                   :title="addSubEditing ? 'Name is fixed once a subscription exists — remove and re-add to rename' : ''">
+            <!-- Live slug preview — shows the actual identifier qui-sync
+                 will use on disk and in API paths. Filesystem-safe chars
+                 only, so the user sees their "Prophet's Movies" become
+                 "prophets-movies" before clicking Add and learns what's
+                 stored without surprise. Hidden in edit mode (slug is
+                 the input value itself) and when the field is empty. -->
+            <div class="dim" style="font-size:var(--font-xs); margin-top:4px"
+                 x-show="!addSubEditing && addSubDraft.displayName">
+              Saved as <code x-text="addSubDraft.slug || '(empty — type at least one letter or digit)'"></code>
+              <span style="opacity:0.7">— folder name on disk and identifier in URLs.</span>
+            </div>
+          </div>
           <label>URL</label>
           <div>
             <input class="input" x-model="addSubDraft.url" placeholder="https://github.com/.../qui-automations.git or /data"
@@ -1527,9 +1666,9 @@
           </div>
           <select class="input" x-model.number="addSubDraft.target_instance_id" style="width:280px">
             <option :value="0">— pick later when applying —</option>
-            <template x-for="i in instances" :key="'sub-inst-' + i.qui_instance_id">
-              <option :value="i.qui_instance_id"
-                      x-text="i.qui_name + ' (#' + i.qui_instance_id + ')'"></option>
+            <template x-for="qi in availableQuiInstances" :key="'sub-inst-' + qi.id">
+              <option :value="qi.id"
+                      x-text="qi.name + ' (#' + qi.id + ')'"></option>
             </template>
           </select>
           <p class="dim" style="font-size:var(--font-xs); margin-top:4px; line-height:1.4">
@@ -1570,6 +1709,42 @@
                 @click="addSubscription()"
                 :disabled="!addSubDraft.slug || !addSubDraft.url"
                 x-text="addSubNextLabel()"></button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add-instance modal — lives outside any tab section so it can open
+       from the Publish "+ Add instance" button regardless of which tab is
+       currently active. (Previously embedded in the Settings section, which
+       hid it whenever the user wasn't on Settings.) -->
+  <div class="modal-backdrop" x-show="addInstanceOpen" @keydown.escape.window="addInstanceOpen = false"
+       x-transition.opacity style="display:none">
+    <div class="modal" @click.stop>
+      <div class="modal-title">Add export instance</div>
+      <div class="modal-body">
+        <p class="dim" style="font-size:var(--font-sm); margin-bottom:16px">
+          Pick a Qui instance to track. Rules from this instance will be exported
+          to the specified folder in the share-repo.
+        </p>
+        <div class="form-grid">
+          <label>Qui instance</label>
+          <select class="input" x-model.number="addInstanceDraft.qui_instance_id">
+            <option :value="0">— select —</option>
+            <template x-for="qi in availableQuiInstances" :key="qi.id">
+              <option :value="qi.id" :disabled="qi.configured"
+                      x-text="qi.name + ' (#' + qi.id + ')' + (qi.configured ? ' — already added' : '')"></option>
+            </template>
+          </select>
+          <label>Repo folder</label>
+          <input class="input" x-model="addInstanceDraft.category"
+                 placeholder="e.g. movies"
+                 pattern="^[a-z0-9][a-z0-9_-]{0,62}$">
+        </div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" @click="addInstanceOpen = false">Cancel</button>
+        <button class="btn btn-primary" @click="addInstance()"
+                :disabled="!addInstanceDraft.qui_instance_id || !addInstanceDraft.category">Add</button>
       </div>
     </div>
   </div>
