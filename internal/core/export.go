@@ -223,12 +223,6 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			if seenInstance[quiID] {
 				continue
 			}
-			// Excluded rules may still live in state (from before they were
-			// excluded, or for slug re-use if un-excluded later). Don't flag
-			// them as Removed.
-			if state.IsExcluded(inst.QuiInstanceID, quiID) {
-				continue
-			}
 			entry, _ := state.Lookup(inst.QuiInstanceID, quiID)
 			if entry == nil {
 				continue
@@ -238,6 +232,15 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			if entry.Category != "" && entry.Category != inst.Category {
 				continue
 			}
+			// Two reasons for a state entry not to be in `seen` this run:
+			//   1. The rule was deleted from Qui itself (gone forever)
+			//   2. The user excluded it via qui-sync's checkbox UI
+			// Both paths must archive the file from the active repo — otherwise
+			// previously-pushed excluded rules stay on GitHub forever and the
+			// user's exclusion has no public-facing effect. Difference is in
+			// state handling: deleted-from-Qui forgets the state entry; excluded
+			// keeps it so the slug + last-known-name survive an un-exclude.
+			excluded := state.IsExcluded(inst.QuiInstanceID, quiID)
 			diff.Removed = append(diff.Removed, DiffEntry{
 				Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
 			})
@@ -275,7 +278,12 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 						return nil, fmt.Errorf("archive %s: %w", path, err)
 					}
 				}
-				state.Forget(inst.QuiInstanceID, quiID)
+				// Only drop the state entry when the rule is gone from Qui.
+				// For excluded rules, keep the entry so slug + last-known-
+				// name are preserved for a potential un-exclude later.
+				if !excluded {
+					state.Forget(inst.QuiInstanceID, quiID)
+				}
 				removalsDirty = true
 			}
 		}

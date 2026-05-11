@@ -555,10 +555,47 @@ func PushRepo(ctx context.Context, repoDir, token string) error {
 	// not always propagate to the HTTPS credential resolution. Passing
 	// the URL as a positional argument to git push is the reliable form.
 	_, err = runGit(ctx, repoDir, env, "push", "--", effectiveURL, branch)
-	if err != nil {
-		return fmt.Errorf("push: %w", err)
+	if err == nil {
+		return nil
 	}
-	return nil
+
+	// Push failed. The common case is "non-fast-forward" — the remote
+	// has commits the local copy doesn't have, usually because the user
+	// edited the repo on GitHub web, pushed from another machine, or a
+	// prior push attempt completed partially. Recovery: pull the remote
+	// changes with --rebase to replay local commits on top, then retry
+	// the push. This matches what graphical Git clients do and avoids
+	// surfacing raw git stderr to non-Git-fluent users.
+	if isNonFastForwardErr(err) {
+		// Pull with rebase. Uses the same positional-URL form as push
+		// so the PAT is consistent and no remote-config rewrites are
+		// needed. We DON'T pull without --rebase because that would
+		// create merge commits in the auto-managed history.
+		if _, pullErr := runGit(ctx, repoDir, env, "pull", "--rebase", "--", effectiveURL, branch); pullErr != nil {
+			return fmt.Errorf("remote has changes that aren't in your local copy yet, and pulling them in failed — there may be a conflict between your latest export and the remote. Use \"Reset to remote\" in Settings to discard your local commits and start fresh from the remote, then re-run the export and push. (pull error: %v)", pullErr)
+		}
+		// Pull succeeded — retry the push.
+		if _, retryErr := runGit(ctx, repoDir, env, "push", "--", effectiveURL, branch); retryErr != nil {
+			return fmt.Errorf("push: %w (retry after pull --rebase)", retryErr)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("push: %w", err)
+}
+
+// isNonFastForwardErr reports whether an error from runGit's stderr
+// indicates the remote has commits the local copy doesn't have. Git's
+// English-language stderr is checked — runGit doesn't preserve exit
+// codes per-error-type, so string matching is the only signal we have.
+// Both phrases appear in the standard error output for this case.
+func isNonFastForwardErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "non-fast-forward") ||
+		strings.Contains(s, "Updates were rejected because")
 }
 
 // ---- internals ----
