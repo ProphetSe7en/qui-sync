@@ -316,6 +316,81 @@ label { font-size: var(--font-sm); color: var(--text-secondary); }
 .diff-remove { color: var(--accent-red);   }
 .diff-move   { color: var(--accent-amber); }
 
+/* Per-row controls on the Publish preview (v0.4.1+). Each diff bullet
+   has a checkbox to include/exclude this change from the next Commit
+   plus a 💬 button that expands an inline rationale editor. Unchecked
+   rows fade + strike through their content; the checkbox + comment
+   button stay legible. */
+.diff-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 2px 0;
+  flex-wrap: wrap;
+}
+.diff-row > input[type="checkbox"] {
+  margin: 4px 0 0 0;
+  flex-shrink: 0;
+}
+.diff-row-content {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.diff-row.is-excluded .diff-row-content {
+  color: var(--text-dim);
+  text-decoration: line-through;
+}
+.diff-row.is-excluded { opacity: 0.65; }
+.diff-comment-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0 6px;
+  font-size: var(--font-xs);
+  line-height: 22px;
+  flex-shrink: 0;
+}
+.diff-comment-btn:hover { border-color: var(--accent-amber); color: var(--accent-amber); }
+.diff-comment-btn.has-comment {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+  background: color-mix(in srgb, var(--accent-amber) 10%, transparent);
+}
+.diff-comment-editor {
+  flex: 1 0 100%;
+  margin: 4px 0 6px 24px;
+}
+.diff-comment-editor textarea {
+  width: 100%;
+  min-height: 48px;
+  resize: vertical;
+  font-family: inherit;
+  font-size: var(--font-xs);
+  padding: 6px 8px;
+  background: var(--surface, var(--bg, transparent));
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.diff-section-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+}
+.diff-section-toggle {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: var(--font-xs);
+  text-decoration: underline;
+  padding: 0;
+}
+.diff-section-toggle:hover { color: var(--text); }
+
 /* Expandable instance rows. */
 .instance-row { border-bottom: 1px solid var(--border-subtle); }
 .instance-row:last-child { border-bottom: none; }

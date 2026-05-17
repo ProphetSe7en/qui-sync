@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.4.1-dev
+
+Publish-side ergonomics: pick which changes go up this round, optionally
+attach a per-change reason, and get a real commit message on GitHub.
+
+### New — Publish
+
+- **Uncheck rows to leave them for next time.** Every line in the
+  Preview list (Added / Updated / Renamed / Archived / Moved) now has
+  a checkbox. Uncheck a row and Commit will skip it — the file on disk
+  stays as-is, your state stays as-is, and the change comes back into
+  the next Preview so you can revisit it. Handy when a rule is still
+  WIP or you want to push one rename in its own commit. Each section
+  also has an **Include all / Exclude all** toggle.
+
+- **Add an optional reason per change.** Click the 💬 button on a row
+  to open an inline reason field. What you type lands two places:
+  - The CHANGELOG.md bullet as an italic suffix
+    (`"Foo" → "Foo (HD)" — *added HD suffix for Sonarr 4K profile*`).
+  - The git commit message body, indented under the rule's bullet —
+    so anyone reading the GitHub commit gets the *why*, not just the *what*.
+  Empty reasons render nothing — they're entirely optional. The global
+  "Edit note" field is unchanged: that's still for *why this batch as
+  a whole*; the per-rule reasons are for *why this specific change*.
+
+- **Real git commit messages.** Was: every export produced a commit
+  with subject `qui-sync export`. Now: the subject describes what
+  actually changed. A single rename becomes
+  `qui-sync: rename movies/Foo → Foo (HD)`. A batch of renames becomes
+  `qui-sync export — renamed 5 rules`. A mixed batch becomes
+  `qui-sync export — 12 changes`. The commit body lists every rule
+  grouped by section, with any per-rule reasons attached.
+
+### Notes
+
+- Selection state survives between Previews of the same batch — you
+  can adjust the list, hit Preview again to double-check, then Commit
+  without re-doing your checkboxes or typed reasons.
+- Excluded rows fade with a strikethrough so the context stays visible.
+  You still see *what* you chose to skip, not just *that* you skipped
+  something.
+
 ## v0.4.0-dev
 
 Bigger Subscribe-side overhaul plus a handful of paper-cut fixes.

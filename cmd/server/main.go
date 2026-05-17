@@ -24,7 +24,7 @@ import (
 	"github.com/prophetse7en/qui-sync/ui"
 )
 
-const version = "0.3.0-dev"
+const version = "0.4.1-dev"
 
 func main() {
 	var (

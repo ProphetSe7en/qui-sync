@@ -812,16 +812,33 @@ type exportRequest struct {
 	// Lives in UI state only — written directly into CHANGELOG.md at
 	// export time. Previews ignore it (nothing is written on dry run).
 	Note string `json:"note,omitempty"`
+
+	// Include filters which rules are written this run. Each entry is a
+	// "<instanceID>:<quiID>" key as produced by DiffEntry.RuleKey on the
+	// frontend. nil/absent = include everything (default).
+	Include []string `json:"include,omitempty"`
+
+	// Comments carries optional per-rule rationale text supplied by the
+	// user. Keys match Include. Empty / missing entries are dropped.
+	Comments map[string]string `json:"comments,omitempty"`
 }
 
 func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	cfg := s.getConfig()
 
-	// Body is optional; tolerate empty / absent / invalid JSON so older
-	// clients that send nothing still work.
+	// Body is optional; tolerate an empty body so older clients that send
+	// nothing still work. The 64 KiB cap accommodates a Commit with a
+	// few hundred include keys and a handful of long per-rule comments —
+	// the previous 8 KiB limit was small enough that decode errors went
+	// silent and turned "user deselected most rules" into "publish all"
+	// for large rule sets (caught in code review). Decode errors now
+	// produce a 400 so the client knows the include filter was ignored.
 	var req exportRequest
 	if r.Body != nil && r.ContentLength != 0 {
-		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 65536)).Decode(&req); err != nil {
+			writeErr(w, 400, fmt.Errorf("invalid export request: %w", err))
+			return
+		}
 	}
 
 	client, err := s.newClient()
@@ -830,11 +847,29 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 		return
 	}
 
-	note := ""
+	opts := core.ExportOptions{DryRun: dryRun}
 	if !dryRun {
-		note = strings.TrimSpace(req.Note)
+		opts.Note = strings.TrimSpace(req.Note)
 	}
-	diff, err := core.RunExport(r.Context(), cfg, client, dryRun, note)
+	// Only build the include filter when the client sent one. nil = "all"
+	// so older clients (and Preview without selection) keep their current
+	// behaviour of touching every rule.
+	if req.Include != nil {
+		opts.Include = make(map[string]bool, len(req.Include))
+		for _, k := range req.Include {
+			opts.Include[k] = true
+		}
+	}
+	if len(req.Comments) > 0 {
+		opts.Comments = make(map[string]string, len(req.Comments))
+		for k, v := range req.Comments {
+			trimmed := strings.TrimSpace(v)
+			if trimmed != "" {
+				opts.Comments[k] = trimmed
+			}
+		}
+	}
+	diff, err := core.RunExport(r.Context(), cfg, client, opts)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
@@ -844,7 +879,8 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	// requiring the user to run git commit manually.
 	gitCommitted := false
 	if !dryRun && !diff.Empty() {
-		if err := core.GitCommitExport(r.Context(), cfg.Paths().Repo); err != nil {
+		msg := core.BuildExportCommitMessage(diff)
+		if err := core.GitCommitExport(r.Context(), cfg.Paths().Repo, msg); err != nil {
 			log.Printf("git commit after export: %v (non-fatal)", err)
 		} else {
 			gitCommitted = true

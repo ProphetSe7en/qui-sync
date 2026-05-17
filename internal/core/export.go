@@ -28,13 +28,55 @@ type DiffEntry struct {
 	OldName       string // for Renamed entries
 	OldCategory   string // for Moved entries
 	QuiID         int
-	ChangedFields []string `json:"changed_fields,omitempty"` // for Updated: which top-level JSON keys differ
+	InstanceID    int      `json:"instance_id"`               // Qui instance this rule belongs to
+	ChangedFields []string `json:"changed_fields,omitempty"`  // for Updated: which top-level JSON keys differ
+	Comment       string   `json:"comment,omitempty"`         // optional per-change rationale from the user
 }
 
 // Empty returns true if nothing changed.
 func (d *ExportDiff) Empty() bool {
 	return len(d.Added) == 0 && len(d.Updated) == 0 && len(d.Removed) == 0 &&
 		len(d.Renamed) == 0 && len(d.Moved) == 0
+}
+
+// ExportOptions controls a RunExport invocation. Zero-value is a normal
+// full export with no note and no per-rule overrides.
+type ExportOptions struct {
+	// DryRun: no filesystem changes when true.
+	DryRun bool
+
+	// Note: free-form markdown attached to today's CHANGELOG entry.
+	Note string
+
+	// Include filters which rules are written this run. Keys are
+	// "<instanceID>:<quiID>" — the same shape DiffEntry.RuleKey produces.
+	// nil = include everything (default). An explicit empty map means
+	// "exclude everything" — a valid request that turns into a no-op export.
+	Include map[string]bool
+
+	// Comments carries per-rule rationale text supplied by the user.
+	// Keys match Include. Empty / missing keys mean "no comment".
+	Comments map[string]string
+}
+
+// RuleKey returns the stable identifier for a rule across the
+// Include / Comments maps. Centralised so frontend and backend cannot
+// drift on the format.
+func (e DiffEntry) RuleKey() string {
+	return ruleKey(e.InstanceID, e.QuiID)
+}
+
+func ruleKey(instanceID, quiID int) string {
+	return fmt.Sprintf("%d:%d", instanceID, quiID)
+}
+
+// isIncluded reports whether a (instance, rule) pair should be processed
+// this run. A nil Include map means "everything included".
+func (o ExportOptions) isIncluded(instanceID, quiID int) bool {
+	if o.Include == nil {
+		return true
+	}
+	return o.Include[ruleKey(instanceID, quiID)]
 }
 
 // RunExport performs an end-to-end export:
@@ -52,7 +94,13 @@ func (d *ExportDiff) Empty() bool {
 // crash leaves the already-processed instances in a consistent state. The
 // changelog is appended only at the very end, so a partial run does not
 // produce a half-written changelog entry.
-func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool, note string) (*ExportDiff, error) {
+//
+// opts.Include filters which rules are processed; rules NOT in the
+// include set are left untouched (no file write, no state update, no
+// changelog entry). They will appear again on the next Preview so the
+// user can park changes mid-batch without losing them.
+func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportOptions) (*ExportDiff, error) {
+	dryRun := opts.DryRun
 	paths := cfg.Paths()
 
 	// Serialize concurrent exports on the same repo. Different repos run parallel.
@@ -96,7 +144,17 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			if state.IsExcluded(inst.QuiInstanceID, r.ID) {
 				continue
 			}
+			// Per-rule include filter (user deselected this row in the
+			// Publish preview). Mark as seen so the removal scan doesn't
+			// archive the file — the rule is still in Qui, the user just
+			// chose not to push the change this round.
+			if !opts.isIncluded(inst.QuiInstanceID, r.ID) {
+				seen[inst.QuiInstanceID][r.ID] = true
+				continue
+			}
 			seen[inst.QuiInstanceID][r.ID] = true
+
+			ruleComment := opts.Comments[ruleKey(inst.QuiInstanceID, r.ID)]
 
 			// Resolve slug: reuse from state, else assign a new unique one.
 			entry, ok := state.Lookup(inst.QuiInstanceID, r.ID)
@@ -109,6 +167,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 					diff.Renamed = append(diff.Renamed, DiffEntry{
 						Slug: slug, Category: inst.Category,
 						Name: r.Name, OldName: entry.LastName, QuiID: r.ID,
+						InstanceID: inst.QuiInstanceID, Comment: ruleComment,
 					})
 				}
 				// Category-move: state says category X, config now says Y.
@@ -117,6 +176,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 					diff.Moved = append(diff.Moved, DiffEntry{
 						Slug: slug, Category: inst.Category, OldCategory: oldCategory,
 						Name: r.Name, QuiID: r.ID,
+						InstanceID: inst.QuiInstanceID, Comment: ruleComment,
 					})
 				}
 			} else {
@@ -174,12 +234,15 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 				if !(renamed && jsonEqualExceptName(existing, fileJSON)) {
 					diff.Updated = append(diff.Updated, DiffEntry{
 						Slug: slug, Category: inst.Category, Name: r.Name, QuiID: r.ID,
+						InstanceID:    inst.QuiInstanceID,
+						Comment:       ruleComment,
 						ChangedFields: computeChangedFields(existing, fileJSON),
 					})
 				}
 			} else if !exists && oldPath == "" {
 				diff.Added = append(diff.Added, DiffEntry{
 					Slug: slug, Category: inst.Category, Name: r.Name, QuiID: r.ID,
+					InstanceID: inst.QuiInstanceID, Comment: ruleComment,
 				})
 			}
 			// If oldPath != "", the move entry is already logged above; we skip
@@ -264,6 +327,12 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			if entry.Category != "" && entry.Category != inst.Category {
 				continue
 			}
+			// Per-rule include filter: if the user deselected this archive
+			// in the preview, skip the archive flow this round. State stays,
+			// file stays, removal will show up again on the next Preview.
+			if !opts.isIncluded(inst.QuiInstanceID, quiID) {
+				continue
+			}
 			// Two reasons for a state entry not to be in `seen` this run:
 			//   1. The rule was deleted from Qui itself (gone forever)
 			//   2. The user excluded it via qui-sync's checkbox UI
@@ -293,6 +362,8 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 			}
 			diff.Removed = append(diff.Removed, DiffEntry{
 				Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
+				InstanceID: inst.QuiInstanceID,
+				Comment:    opts.Comments[ruleKey(inst.QuiInstanceID, quiID)],
 			})
 			if !dryRun {
 				// path + fileExists already computed above. Re-confirm the
@@ -347,7 +418,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, dryRun bool,
 	}
 
 	if !dryRun && !diff.Empty() {
-		if err := AppendChangelog(paths.Repo, diff, time.Now(), note); err != nil {
+		if err := AppendChangelog(paths.Repo, diff, time.Now(), opts.Note); err != nil {
 			return nil, err
 		}
 	}
@@ -621,4 +692,5 @@ func sortDiffSlices(d *ExportDiff) {
 	sortByCategorySlug(d.Updated)
 	sortByCategorySlug(d.Removed)
 	sortByCategorySlug(d.Renamed)
+	sortByCategorySlug(d.Moved)
 }

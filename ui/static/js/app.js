@@ -30,6 +30,15 @@ function quiSyncApp() {
     // request and written directly into today's CHANGELOG.md section.
     // Cleared automatically on successful export.
     exportNote: '',
+    // Per-rule selection state on the Publish preview. excludedFromExport
+    // holds rule keys ("<instance_id>:<qui_id>") the user has unchecked;
+    // exportComments holds optional rationale text per rule. State
+    // survives across Previews of the same batch — see syncSelectionToDiff
+    // — and resets after a successful Commit. Default is "everything
+    // included, no comments", matching pre-v0.4.1 behaviour.
+    excludedFromExport: new Set(),
+    exportComments: {},
+    expandedExportComment: {},
     // After a successful export, stash the submitted note so the user
     // can open "Edit note" to fix a typo without re-running export.
     // Resets to '' when the next export runs.
@@ -2195,11 +2204,140 @@ function quiSyncApp() {
       this.diff = null;
       try {
         this.diff = await this.apiFetch('/api/export/preview', { method: 'POST' });
+        // Drop selection + comment state for rules that no longer appear
+        // in the new preview, but preserve everything that still matches.
+        // Lets the user adjust → Preview → adjust again without losing
+        // typed comments or checkbox state on rules they care about.
+        this.syncSelectionToDiff();
       } catch (e) {
         this.toast('error', 'Preview failed: ' + e.message);
       } finally {
         this.loading.export = false;
       }
+    },
+
+    // ruleKey is the stable identifier shared with the backend's
+    // ExportOptions.Include / Comments maps. Format MUST match
+    // internal/core/export.go::ruleKey to avoid a silent drift.
+    ruleKey(e) {
+      return (e && (e.instance_id ?? 0)) + ':' + (e && (e.QuiID ?? 0));
+    },
+
+    // diffRuleKeys walks every section of the current preview and yields
+    // the rule key for each entry. Used to prune selection state and to
+    // drive the include array on Commit.
+    diffRuleKeys() {
+      if (!this.diff) return [];
+      const sections = [
+        this.diff.added, this.diff.updated, this.diff.renamed,
+        this.diff.removed, this.diff.moved,
+      ];
+      const out = [];
+      for (const list of sections) {
+        for (const e of (list || [])) {
+          out.push(this.ruleKey(e));
+        }
+      }
+      return out;
+    },
+
+    isExcludedFromExport(e) {
+      return this.excludedFromExport.has(this.ruleKey(e));
+    },
+
+    toggleExportEntry(e) {
+      const key = this.ruleKey(e);
+      if (this.excludedFromExport.has(key)) {
+        this.excludedFromExport.delete(key);
+      } else {
+        this.excludedFromExport.add(key);
+      }
+      // Force Alpine reactivity — Set mutations don't trigger
+      // re-renders on their own.
+      this.excludedFromExport = new Set(this.excludedFromExport);
+    },
+
+    // toggleExportComment opens / closes the inline rationale editor
+    // for one diff row. Comment text persists between collapses so the
+    // user can hide a long note for layout without losing it.
+    toggleExportComment(e) {
+      const key = this.ruleKey(e);
+      this.expandedExportComment = {
+        ...this.expandedExportComment,
+        [key]: !this.expandedExportComment[key],
+      };
+    },
+
+    exportCommentFor(e) {
+      return this.exportComments[this.ruleKey(e)] || '';
+    },
+
+    setExportComment(e, value) {
+      // Store the raw text — trimming happens server-side on Commit so
+      // the user can type and pause mid-sentence without losing
+      // intentional leading whitespace.
+      const key = this.ruleKey(e);
+      this.exportComments = { ...this.exportComments, [key]: value || '' };
+    },
+
+    hasExportComment(e) {
+      const v = this.exportComments[this.ruleKey(e)];
+      return !!(v && v.trim());
+    },
+
+    // syncSelectionToDiff drops state for rules that are no longer in
+    // the current preview while preserving entries that survived. Called
+    // after Preview replaces this.diff so the table renders consistent
+    // checkboxes / comments. Skipped: setting up brand-new keys —
+    // missing-from-set means "included" already.
+    syncSelectionToDiff() {
+      const valid = new Set(this.diffRuleKeys());
+      const newSet = new Set();
+      for (const k of this.excludedFromExport) {
+        if (valid.has(k)) newSet.add(k);
+      }
+      this.excludedFromExport = newSet;
+      const newComments = {};
+      for (const k of Object.keys(this.exportComments)) {
+        if (valid.has(k)) newComments[k] = this.exportComments[k];
+      }
+      this.exportComments = newComments;
+      const newExpanded = {};
+      for (const k of Object.keys(this.expandedExportComment)) {
+        if (valid.has(k)) newExpanded[k] = this.expandedExportComment[k];
+      }
+      this.expandedExportComment = newExpanded;
+    },
+
+    // resetExportSelection wipes per-rule selection state. Called after
+    // a successful Commit since the rules that were processed are gone
+    // from the next preview anyway; leaving the Sets populated would
+    // just confuse the next batch.
+    resetExportSelection() {
+      this.excludedFromExport = new Set();
+      this.exportComments = {};
+      this.expandedExportComment = {};
+    },
+
+    // sectionAllExcluded reports whether every row in the given section
+    // is currently unchecked. Used to flip the section-level toggle's
+    // "Exclude all / Include all" label.
+    sectionAllExcluded(entries) {
+      if (!entries || entries.length === 0) return false;
+      return entries.every(e => this.isExcludedFromExport(e));
+    },
+
+    // toggleSectionExclude flips every row in one section: if any are
+    // currently included, exclude all; otherwise include all. Each call
+    // produces a single new Set instance so Alpine re-renders once.
+    toggleSectionExclude(entries) {
+      const newSet = new Set(this.excludedFromExport);
+      const allExcluded = this.sectionAllExcluded(entries);
+      for (const e of (entries || [])) {
+        const k = this.ruleKey(e);
+        if (allExcluded) newSet.delete(k); else newSet.add(k);
+      }
+      this.excludedFromExport = newSet;
     },
 
     async runExport() {
@@ -2215,10 +2353,42 @@ function quiSyncApp() {
         // Any note the user typed goes into the export request body
         // and is written directly into today's CHANGELOG.md section.
         const note = (this.exportNote || '').trim();
+
+        // Build the include filter from the current diff minus
+        // anything the user has unchecked. If the preview was empty
+        // somehow (shouldn't happen — button only renders for non-empty
+        // diffs) fall back to no filter, which preserves the legacy
+        // behaviour of "export everything Qui reports".
+        const allKeys = this.diffRuleKeys();
+        const includeKeys = allKeys.filter(k => !this.excludedFromExport.has(k));
+        const skippedCount = allKeys.length - includeKeys.length;
+
+        // Only build a comments map for rules we are actually sending.
+        // Skipped rules carry no rationale to record, and stripping them
+        // here keeps the wire format minimal.
+        const includedSet = new Set(includeKeys);
+        const commentsPayload = {};
+        for (const k of Object.keys(this.exportComments)) {
+          if (!includedSet.has(k)) continue;
+          const v = (this.exportComments[k] || '').trim();
+          if (v) commentsPayload[k] = v;
+        }
+
+        const body = { note };
+        if (allKeys.length > 0) {
+          // Always send Include when we have a real preview so the
+          // backend knows the user reviewed the list — empty array is
+          // valid ("nothing this round").
+          body.include = includeKeys;
+        }
+        if (Object.keys(commentsPayload).length > 0) {
+          body.comments = commentsPayload;
+        }
+
         this.diff = await this.apiFetch('/api/export/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ note }),
+          body: JSON.stringify(body),
         });
         // Clear the note draft and stash the submitted text so
         // "Edit note" can pre-fill with it if the user needs to fix
@@ -2227,11 +2397,19 @@ function quiSyncApp() {
           this.lastExportNote = note;
           this.exportNote = '';
           this.editingExportNote = false;
+          this.resetExportSelection();
         }
         await this.loadChangelog();
         await this.loadRepoStatus();
         if (this.diff.empty) {
-          this.toast('info', 'Nothing to commit — local rules already in sync with Qui.');
+          // Could be "nothing changed" OR "user deselected everything".
+          // The latter is its own kind of no-op worth flagging so the
+          // user understands they didn't accidentally commit something.
+          if (includeKeys.length === 0 && allKeys.length > 0) {
+            this.toast('info', 'Nothing committed — every change was deselected.');
+          } else {
+            this.toast('info', 'Nothing to commit — local rules already in sync with Qui.');
+          }
         } else {
           const total =
             (this.diff.added   || []).length +
@@ -2240,7 +2418,10 @@ function quiSyncApp() {
             (this.diff.removed || []).length +
             (this.diff.moved   || []).length;
           const gitMsg = this.diff.git_committed ? ' + committed to git' : '';
-          this.toast('info', 'Export committed — ' + total + ' change' + (total === 1 ? '' : 's') + gitMsg + '.');
+          const skipMsg = skippedCount > 0
+            ? ' (' + skippedCount + ' deselected and left for next time)'
+            : '';
+          this.toast('info', 'Export committed — ' + total + ' change' + (total === 1 ? '' : 's') + gitMsg + skipMsg + '.');
         }
       } catch (e) {
         this.toast('error', 'Export failed: ' + e.message);

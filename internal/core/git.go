@@ -202,10 +202,12 @@ func CurrentSHA(ctx context.Context, destDir string) (string, error) {
 }
 
 // GitCommitExport stages all changes in the share-repo and creates a
-// commit with an auto-generated message. Called after RunExport to make
-// the export immediately available for Sync/Pull. Idempotent — if there
-// are no staged changes, git commit exits cleanly and we return nil.
-func GitCommitExport(ctx context.Context, repoDir string) error {
+// commit with the supplied message. Called after RunExport to make the
+// export immediately available for Sync/Pull. Idempotent — if there are
+// no staged changes, git commit exits cleanly and we return nil. Empty
+// msg falls back to "qui-sync export" so callers cannot accidentally
+// produce an empty-subject commit.
+func GitCommitExport(ctx context.Context, repoDir, msg string) error {
 	if _, err := os.Stat(filepath.Join(repoDir, ".git")); err != nil {
 		return fmt.Errorf("not a git repo: %s", repoDir)
 	}
@@ -216,9 +218,12 @@ func GitCommitExport(ctx context.Context, repoDir string) error {
 	if _, err := runGit(ctx, repoDir, nil, "add", "-A"); err != nil {
 		return err
 	}
+	if strings.TrimSpace(msg) == "" {
+		msg = "qui-sync export"
+	}
 	// --allow-empty is not used — if nothing staged, commit returns 1
 	// which we treat as "nothing to commit" (success).
-	_, err := runGit(ctx, repoDir, nil, "commit", "-m", "qui-sync export")
+	_, err := runGit(ctx, repoDir, nil, "commit", "-m", msg)
 	if err != nil && strings.Contains(err.Error(), "nothing to commit") {
 		return nil
 	}

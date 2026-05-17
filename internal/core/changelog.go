@@ -204,31 +204,56 @@ func renderSection(date string, diff *ExportDiff, manualNote string) string {
 	if len(diff.Added) > 0 {
 		sb.WriteString("### Added\n")
 		for _, e := range diff.Added {
-			fmt.Fprintf(&sb, "- `%s` (%s) — %s\n", e.Slug, e.Category, e.Name)
+			fmt.Fprintf(&sb, "- `%s` (%s) — %s", e.Slug, e.Category, e.Name)
+			writeCommentSuffix(&sb, e.Comment)
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 	}
 	if len(diff.Updated) > 0 {
 		sb.WriteString("### Updated\n")
 		for _, e := range diff.Updated {
-			fmt.Fprintf(&sb, "- `%s` (%s) — %s\n", e.Slug, e.Category, e.Name)
+			fmt.Fprintf(&sb, "- `%s` (%s) — %s", e.Slug, e.Category, e.Name)
+			writeCommentSuffix(&sb, e.Comment)
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 	}
 	if len(diff.Renamed) > 0 {
 		sb.WriteString("### Renamed\n")
 		for _, e := range diff.Renamed {
-			fmt.Fprintf(&sb, "- `%s` (%s) — \"%s\" → \"%s\"\n", e.Slug, e.Category, e.OldName, e.Name)
+			fmt.Fprintf(&sb, "- `%s` (%s) — \"%s\" → \"%s\"", e.Slug, e.Category, e.OldName, e.Name)
+			writeCommentSuffix(&sb, e.Comment)
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 	}
 	if len(diff.Removed) > 0 {
 		sb.WriteString("### Archived\n")
 		for _, e := range diff.Removed {
-			fmt.Fprintf(&sb, "- `%s` (%s) — %s (moved to `archive/%s/`)\n", e.Slug, e.Category, e.Name, e.Category)
+			fmt.Fprintf(&sb, "- `%s` (%s) — %s (moved to `archive/%s/`)", e.Slug, e.Category, e.Name, e.Category)
+			writeCommentSuffix(&sb, e.Comment)
+			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
 	}
 
 	return sb.String()
+}
+
+// writeCommentSuffix appends " — *<comment>*" when comment is non-empty.
+// Single-line only — newlines are collapsed to spaces so a multi-line
+// comment cannot break the markdown bullet structure. Asterisks inside
+// the comment are escaped because the suffix renders the comment as
+// italic markdown — an unescaped `*` would close the italic span early
+// and produce broken output.
+func writeCommentSuffix(sb *strings.Builder, comment string) {
+	c := strings.TrimSpace(comment)
+	if c == "" {
+		return
+	}
+	c = strings.ReplaceAll(c, "\r\n", " ")
+	c = strings.ReplaceAll(c, "\n", " ")
+	c = strings.ReplaceAll(c, "*", `\*`)
+	fmt.Fprintf(sb, " — *%s*", c)
 }

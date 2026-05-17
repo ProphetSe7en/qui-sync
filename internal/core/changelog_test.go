@@ -17,6 +17,53 @@ func readChangelog(t *testing.T, dir string) string {
 	return string(data)
 }
 
+// TestAppendChangelogPerRuleComment covers the per-rule comment
+// suffix added in v0.4.1-dev — each diff bullet with a non-empty
+// Comment renders an italic "— *...*" tail.
+func TestAppendChangelogPerRuleComment(t *testing.T) {
+	dir := t.TempDir()
+	diff := &ExportDiff{
+		Renamed: []DiffEntry{{
+			Slug: "foo", Category: "movies", OldName: "Foo", Name: "Foo (HD)",
+			Comment: "added HD suffix",
+		}},
+		Added: []DiffEntry{
+			{Slug: "bar", Category: "movies", Name: "Bar"}, // no comment
+		},
+	}
+	when := time.Date(2026, 5, 17, 0, 0, 0, 0, time.UTC)
+	if err := AppendChangelog(dir, diff, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	if !strings.Contains(got, `"Foo" → "Foo (HD)" — *added HD suffix*`) {
+		t.Errorf("rename comment suffix missing:\n%s", got)
+	}
+	// Entry without a comment must NOT get a trailing em-dash.
+	if strings.Contains(got, "movies) — Bar — *") {
+		t.Errorf("empty comment should not render suffix:\n%s", got)
+	}
+}
+
+// TestAppendChangelogCommentSanitisesNewlines confirms multi-line
+// comments are flattened so the markdown bullet structure survives.
+func TestAppendChangelogCommentSanitisesNewlines(t *testing.T) {
+	dir := t.TempDir()
+	diff := &ExportDiff{
+		Added: []DiffEntry{{
+			Slug: "a", Category: "movies", Name: "Alpha",
+			Comment: "first line\nsecond line\r\nthird",
+		}},
+	}
+	if err := AppendChangelog(dir, diff, time.Now(), ""); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	if !strings.Contains(got, "*first line second line third*") {
+		t.Errorf("newlines not collapsed:\n%s", got)
+	}
+}
+
 // TestAppendChangelogFreshFile covers the "no prior CHANGELOG.md" path
 // — the helper must create the file with header + a single section.
 func TestAppendChangelogFreshFile(t *testing.T) {

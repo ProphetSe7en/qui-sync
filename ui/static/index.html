@@ -358,48 +358,171 @@
         </template>
         <template x-if="diff && !diff.empty">
           <div>
-            <div x-show="diff.added.length">
-              <div class="diff-add" style="font-weight:600">+ <span x-text="diff.added.length"></span> added</div>
-              <ul>
-                <template x-for="e in diff.added" :key="e.QuiID">
-                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>
-                </template>
-              </ul>
+            <!-- Helper hint: this whole preview is interactive.
+                 Each row has a checkbox + 💬 button. -->
+            <div class="dim" style="font-size:var(--font-xs); margin-bottom:8px">
+              Uncheck a row to leave it for next time. Click 💬 to add a per-rule reason — lands in CHANGELOG.md and the git commit message.
             </div>
-            <div x-show="diff.updated.length">
-              <div class="diff-update" style="font-weight:600">~ <span x-text="diff.updated.length"></span> updated</div>
+
+            <div x-show="diff.added.length">
+              <div class="diff-section-header diff-add">
+                <span>+ <span x-text="diff.added.length"></span> added</span>
+                <button type="button" class="diff-section-toggle"
+                        @click="toggleSectionExclude(diff.added)"
+                        x-text="sectionAllExcluded(diff.added) ? 'Include all' : 'Exclude all'"></button>
+              </div>
               <ul>
-                <template x-for="e in diff.updated" :key="e.QuiID">
-                  <li>
-                    <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
-                    <span x-show="e.changed_fields && e.changed_fields.length"
-                          class="dim" style="font-size:var(--font-xs); margin-left:6px"
-                          x-text="'(' + (e.changed_fields || []).join(', ') + ')'"></span>
+                <template x-for="e in (diff.added || [])" :key="ruleKey(e)">
+                  <li class="diff-row" :class="{'is-excluded': isExcludedFromExport(e)}">
+                    <input type="checkbox"
+                           :checked="!isExcludedFromExport(e)"
+                           @change="toggleExportEntry(e)"
+                           title="Include this change in the next Commit export">
+                    <span class="diff-row-content">
+                      <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
+                    </span>
+                    <button type="button" class="diff-comment-btn"
+                            :class="{'has-comment': hasExportComment(e)}"
+                            @click="toggleExportComment(e)"
+                            :title="hasExportComment(e) ? 'Edit reason' : 'Add reason (optional)'">💬</button>
+                    <div class="diff-comment-editor" x-show="expandedExportComment[ruleKey(e)]">
+                      <textarea rows="2"
+                                :value="exportCommentFor(e)"
+                                @input="setExportComment(e, $event.target.value)"
+                                placeholder="Why this change? (optional)"></textarea>
+                    </div>
                   </li>
                 </template>
               </ul>
             </div>
+
+            <div x-show="diff.updated.length">
+              <div class="diff-section-header diff-update">
+                <span>~ <span x-text="diff.updated.length"></span> updated</span>
+                <button type="button" class="diff-section-toggle"
+                        @click="toggleSectionExclude(diff.updated)"
+                        x-text="sectionAllExcluded(diff.updated) ? 'Include all' : 'Exclude all'"></button>
+              </div>
+              <ul>
+                <template x-for="e in (diff.updated || [])" :key="ruleKey(e)">
+                  <li class="diff-row" :class="{'is-excluded': isExcludedFromExport(e)}">
+                    <input type="checkbox"
+                           :checked="!isExcludedFromExport(e)"
+                           @change="toggleExportEntry(e)"
+                           title="Include this change in the next Commit export">
+                    <span class="diff-row-content">
+                      <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
+                      <span x-show="e.changed_fields && e.changed_fields.length"
+                            class="dim" style="font-size:var(--font-xs); margin-left:6px"
+                            x-text="'(' + (e.changed_fields || []).join(', ') + ')'"></span>
+                    </span>
+                    <button type="button" class="diff-comment-btn"
+                            :class="{'has-comment': hasExportComment(e)}"
+                            @click="toggleExportComment(e)"
+                            :title="hasExportComment(e) ? 'Edit reason' : 'Add reason (optional)'">💬</button>
+                    <div class="diff-comment-editor" x-show="expandedExportComment[ruleKey(e)]">
+                      <textarea rows="2"
+                                :value="exportCommentFor(e)"
+                                @input="setExportComment(e, $event.target.value)"
+                                placeholder="Why this change? (optional)"></textarea>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+            </div>
+
             <div x-show="diff.renamed.length">
-              <div class="diff-rename" style="font-weight:600">R <span x-text="diff.renamed.length"></span> renamed</div>
+              <div class="diff-section-header diff-rename">
+                <span>R <span x-text="diff.renamed.length"></span> renamed</span>
+                <button type="button" class="diff-section-toggle"
+                        @click="toggleSectionExclude(diff.renamed)"
+                        x-text="sectionAllExcluded(diff.renamed) ? 'Include all' : 'Exclude all'"></button>
+              </div>
               <ul>
-                <template x-for="e in diff.renamed" :key="e.QuiID">
-                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — "<span x-text="e.OldName"></span>" → "<span x-text="e.Name"></span>"</li>
+                <template x-for="e in (diff.renamed || [])" :key="ruleKey(e)">
+                  <li class="diff-row" :class="{'is-excluded': isExcludedFromExport(e)}">
+                    <input type="checkbox"
+                           :checked="!isExcludedFromExport(e)"
+                           @change="toggleExportEntry(e)"
+                           title="Include this change in the next Commit export">
+                    <span class="diff-row-content">
+                      <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — "<span x-text="e.OldName"></span>" → "<span x-text="e.Name"></span>"
+                    </span>
+                    <button type="button" class="diff-comment-btn"
+                            :class="{'has-comment': hasExportComment(e)}"
+                            @click="toggleExportComment(e)"
+                            :title="hasExportComment(e) ? 'Edit reason' : 'Add reason (optional)'">💬</button>
+                    <div class="diff-comment-editor" x-show="expandedExportComment[ruleKey(e)]">
+                      <textarea rows="2"
+                                :value="exportCommentFor(e)"
+                                @input="setExportComment(e, $event.target.value)"
+                                placeholder="Why this rename? (optional)"></textarea>
+                    </div>
+                  </li>
                 </template>
               </ul>
             </div>
+
             <div x-show="diff.removed.length">
-              <div class="diff-remove" style="font-weight:600">⌫ <span x-text="diff.removed.length"></span> archived (moved to <code>archive/</code>)</div>
+              <div class="diff-section-header diff-remove">
+                <span>⌫ <span x-text="diff.removed.length"></span> archived (moved to <code>archive/</code>)</span>
+                <button type="button" class="diff-section-toggle"
+                        @click="toggleSectionExclude(diff.removed)"
+                        x-text="sectionAllExcluded(diff.removed) ? 'Include all' : 'Exclude all'"></button>
+              </div>
               <ul>
-                <template x-for="e in diff.removed" :key="e.QuiID">
-                  <li><span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span></li>
+                <template x-for="e in (diff.removed || [])" :key="ruleKey(e)">
+                  <li class="diff-row" :class="{'is-excluded': isExcludedFromExport(e)}">
+                    <input type="checkbox"
+                           :checked="!isExcludedFromExport(e)"
+                           @change="toggleExportEntry(e)"
+                           title="Include this change in the next Commit export">
+                    <span class="diff-row-content">
+                      <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
+                    </span>
+                    <button type="button" class="diff-comment-btn"
+                            :class="{'has-comment': hasExportComment(e)}"
+                            @click="toggleExportComment(e)"
+                            :title="hasExportComment(e) ? 'Edit reason' : 'Add reason (optional)'">💬</button>
+                    <div class="diff-comment-editor" x-show="expandedExportComment[ruleKey(e)]">
+                      <textarea rows="2"
+                                :value="exportCommentFor(e)"
+                                @input="setExportComment(e, $event.target.value)"
+                                placeholder="Why archive this? (optional)"></textarea>
+                    </div>
+                  </li>
                 </template>
               </ul>
             </div>
+
             <div x-show="diff.moved && diff.moved.length">
-              <div class="diff-move" style="font-weight:600">↦ <span x-text="diff.moved.length"></span> moved</div>
+              <div class="diff-section-header diff-move">
+                <span>↦ <span x-text="diff.moved.length"></span> moved</span>
+                <button type="button" class="diff-section-toggle"
+                        @click="toggleSectionExclude(diff.moved)"
+                        x-text="sectionAllExcluded(diff.moved) ? 'Include all' : 'Exclude all'"></button>
+              </div>
               <ul>
-                <template x-for="e in diff.moved" :key="e.QuiID">
-                  <li><b x-text="e.Slug"></b> — <span x-text="e.OldCategory"></span> → <span x-text="e.Category"></span></li>
+                <template x-for="e in (diff.moved || [])" :key="ruleKey(e)">
+                  <li class="diff-row" :class="{'is-excluded': isExcludedFromExport(e)}">
+                    <input type="checkbox"
+                           :checked="!isExcludedFromExport(e)"
+                           @change="toggleExportEntry(e)"
+                           title="Include this change in the next Commit export">
+                    <span class="diff-row-content">
+                      <b x-text="e.Slug"></b> — <span x-text="e.OldCategory"></span> → <span x-text="e.Category"></span>
+                    </span>
+                    <button type="button" class="diff-comment-btn"
+                            :class="{'has-comment': hasExportComment(e)}"
+                            @click="toggleExportComment(e)"
+                            :title="hasExportComment(e) ? 'Edit reason' : 'Add reason (optional)'">💬</button>
+                    <div class="diff-comment-editor" x-show="expandedExportComment[ruleKey(e)]">
+                      <textarea rows="2"
+                                :value="exportCommentFor(e)"
+                                @input="setExportComment(e, $event.target.value)"
+                                placeholder="Why this move? (optional)"></textarea>
+                    </div>
+                  </li>
                 </template>
               </ul>
             </div>
