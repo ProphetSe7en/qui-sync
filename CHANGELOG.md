@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.3-dev
+
+Newest entries land at the top of each section. v0.4.2 merged
+same-day Commits but appended new bullets to the bottom; reading the
+file you couldn't tell what you just did versus what you did this
+morning. Same-day activity now reads chronologically reverse — the
+most recent change is the first line.
+
+### Fixed — Publish
+
+- **Newest at top inside each group.** A later same-day Commit
+  touching a different rule now prepends that bullet to the top of
+  its group instead of appending after the morning's entries.
+- **Same-rule upsert moves to top.** Re-touching a rule later in the
+  day (e.g. to add a comment) replaces the old bullet AND moves it
+  to the top of the group — so the most recent change to a rule is
+  always at the top.
+- **New group lands on top.** If your afternoon Commit introduces a
+  group that wasn't in the morning section (e.g. you renamed
+  something for the first time today), the new `### Renamed` block
+  appears above the existing `### Updated` block.
+
 ## v0.4.2-dev
 
 Same-day Commits now stack in `CHANGELOG.md` instead of overwriting

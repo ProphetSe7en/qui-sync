@@ -180,19 +180,16 @@ func TestAppendChangelogSameDayUpsertsSameSlug(t *testing.T) {
 	}
 }
 
-// TestAppendChangelogSameDayPreservesGroupOrder — group order on disk
-// stays stable across multiple commits in the same day. Pre-existing
-// groups keep their position; new groups append after them.
-func TestAppendChangelogSameDayPreservesGroupOrder(t *testing.T) {
+// TestAppendChangelogSameDayMostRecentGroupOnTop — a brand-new group
+// introduced by a later same-day commit lands at the top of the
+// section so the most recent change reads first.
+func TestAppendChangelogSameDayMostRecentGroupOnTop(t *testing.T) {
 	dir := t.TempDir()
 	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
-	// First: just an Updated section.
 	first := &ExportDiff{Updated: []DiffEntry{{Slug: "u", Category: "tier1", Name: "U"}}}
 	if err := AppendChangelog(dir, first, when, ""); err != nil {
 		t.Fatal(err)
 	}
-	// Second: Added on top of the same day. Expect Updated first
-	// (existing position) then Added appended after.
 	second := &ExportDiff{Added: []DiffEntry{{Slug: "a", Category: "tier1", Name: "A"}}}
 	if err := AppendChangelog(dir, second, when, ""); err != nil {
 		t.Fatal(err)
@@ -203,8 +200,56 @@ func TestAppendChangelogSameDayPreservesGroupOrder(t *testing.T) {
 	if updIdx < 0 || addIdx < 0 {
 		t.Fatalf("both group headings should exist:\n%s", got)
 	}
-	if updIdx > addIdx {
-		t.Errorf("existing group order must be preserved; Updated should precede Added when first commit had Updated:\n%s", got)
+	if addIdx > updIdx {
+		t.Errorf("most recent group should come first (Added second → Added on top):\n%s", got)
+	}
+}
+
+// TestAppendChangelogSameDayBulletsNewestOnTop — a later commit
+// touching the same group prepends the new bullet ahead of older ones.
+// Same-slug upsert also moves to the top so the day reads chronologically
+// reverse (newest first).
+func TestAppendChangelogSameDayBulletsNewestOnTop(t *testing.T) {
+	dir := t.TempDir()
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	first := &ExportDiff{Updated: []DiffEntry{{Slug: "alpha", Category: "tier1", Name: "Alpha"}}}
+	if err := AppendChangelog(dir, first, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	// New bullet, different slug — should prepend.
+	second := &ExportDiff{Updated: []DiffEntry{{Slug: "bravo", Category: "tier1", Name: "Bravo"}}}
+	if err := AppendChangelog(dir, second, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	bravoIdx := strings.Index(got, "- `bravo`")
+	alphaIdx := strings.Index(got, "- `alpha`")
+	if bravoIdx < 0 || alphaIdx < 0 {
+		t.Fatalf("both bullets must exist:\n%s", got)
+	}
+	if alphaIdx < bravoIdx {
+		t.Errorf("newer bravo bullet should sit above older alpha (newest at top):\n%s", got)
+	}
+
+	// Third commit touches alpha again with a comment — same-slug
+	// upsert must move it back to the top.
+	third := &ExportDiff{
+		Updated: []DiffEntry{{Slug: "alpha", Category: "tier1", Name: "Alpha", Comment: "scoring tweak"}},
+	}
+	if err := AppendChangelog(dir, third, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	got = readChangelog(t, dir)
+	if strings.Count(got, "- `alpha`") != 1 {
+		t.Errorf("alpha must appear once after upsert:\n%s", got)
+	}
+	if !strings.Contains(got, "*scoring tweak*") {
+		t.Errorf("alpha bullet should carry the new comment:\n%s", got)
+	}
+	alphaIdx = strings.Index(got, "- `alpha`")
+	bravoIdx = strings.Index(got, "- `bravo`")
+	if alphaIdx > bravoIdx {
+		t.Errorf("alpha touched last should now sit above bravo (move-to-top on upsert):\n%s", got)
 	}
 }
 

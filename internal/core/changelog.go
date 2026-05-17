@@ -394,6 +394,13 @@ func parseSection(s string) parsedSection {
 // the same date. Returns the merged section as a markdown string with a
 // single trailing blank line — same shape as renderSection's output.
 //
+// Ordering: newest at the top. Bullets touched by the fresh commit
+// move to the top of their group (or get prepended if brand new); a
+// brand-new group introduced by the fresh commit lands at the top of
+// the section. The day's activity reads chronologically reverse —
+// most recent change first — matching how a maintainer scans a
+// changelog ("what did I just do?").
+//
 // If parsing fails outright (existing isn't a recognisable section),
 // the fresh section is returned unchanged, matching the pre-merge
 // "replace" behaviour as a safe fallback.
@@ -416,8 +423,11 @@ func mergeSameDaySections(existing, fresh string) string {
 		merged.note = e.note
 	}
 
-	// Copy existing groups (with their bullets) into merged so order is
-	// preserved. We then upsert fresh entries on top.
+	// Seed merged with existing groups + bullets in their on-disk order.
+	// The fresh-entry pass below moves touched bullets to the top and
+	// prepends new ones, which is what produces the "newest at top"
+	// shape — but we still need existing groups present as anchors so
+	// untouched groups survive in their prior position.
 	for _, g := range e.groups {
 		merged.groups = append(merged.groups, parsedGroup{
 			heading: g.heading,
@@ -426,34 +436,44 @@ func mergeSameDaySections(existing, fresh string) string {
 		merged.groupIndex[g.heading] = len(merged.groups) - 1
 	}
 
-	// Upsert fresh entries.
+	// Apply fresh entries. Per group, in fresh-render order: a same-slug
+	// bullet replaces the existing one AND moves to the top; a new-slug
+	// bullet prepends. A brand-new group is inserted at the section
+	// head so the most recently touched section sits on top.
 	for _, fg := range f.groups {
 		idx, ok := merged.groupIndex[fg.heading]
 		if !ok {
-			merged.groups = append(merged.groups, parsedGroup{heading: fg.heading})
-			idx = len(merged.groups) - 1
-			merged.groupIndex[fg.heading] = idx
+			// Insert new group at index 0 (top of section).
+			merged.groups = append([]parsedGroup{{heading: fg.heading}}, merged.groups...)
+			// Re-index everything since we shifted.
+			merged.groupIndex = map[string]int{}
+			for i, g := range merged.groups {
+				merged.groupIndex[g.heading] = i
+			}
+			idx = 0
 		}
 		target := &merged.groups[idx]
-		for _, fb := range fg.bullets {
+		// Walk fresh bullets in reverse so the LAST fresh bullet ends up
+		// at the very top — preserves the relative order of the new
+		// entries within one Commit.
+		for i := len(fg.bullets) - 1; i >= 0; i-- {
+			fb := fg.bullets[i]
 			if fb.slug == "" {
-				// Unparseable bullet from the fresh side — just append.
-				// Should be rare since renderSection's output is always
-				// parseable.
-				target.bullets = append(target.bullets, fb)
+				// Unparseable bullet from the fresh side. Prepend so
+				// it still surfaces at the top. Rare in practice since
+				// renderSection's output is always parseable.
+				target.bullets = append([]parsedBullet{fb}, target.bullets...)
 				continue
 			}
-			replaced := false
-			for i := range target.bullets {
-				if target.bullets[i].slug == fb.slug {
-					target.bullets[i] = fb // later wins
-					replaced = true
-					break
+			// Drop any existing entry for this slug — the new one
+			// will replace it at the top.
+			filtered := target.bullets[:0]
+			for _, b := range target.bullets {
+				if b.slug != fb.slug {
+					filtered = append(filtered, b)
 				}
 			}
-			if !replaced {
-				target.bullets = append(target.bullets, fb)
-			}
+			target.bullets = append([]parsedBullet{fb}, filtered...)
 		}
 	}
 
