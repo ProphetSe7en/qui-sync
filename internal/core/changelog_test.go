@@ -103,17 +103,20 @@ func TestAppendChangelogNoNote(t *testing.T) {
 	}
 }
 
-// TestAppendChangelogSameDayReplaces — running export twice on the
-// same day must end with a single section, not two stacked entries.
-// The second run's diff + note wins.
-func TestAppendChangelogSameDayReplaces(t *testing.T) {
+// TestAppendChangelogSameDayMergesGroups — running export twice on the
+// same day collapses to a single section but the two diffs' groups
+// coexist. The second run's note replaces the first's (fresh-non-empty-
+// wins). This is the v0.4.2 semantic — pre-v0.4.2 used to wipe the
+// first run's entries, which lost data when the second Commit used the
+// per-rule include filter to publish only a subset.
+func TestAppendChangelogSameDayMergesGroups(t *testing.T) {
 	dir := t.TempDir()
 	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
 	first := &ExportDiff{Added: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
 	if err := AppendChangelog(dir, first, when, "first note"); err != nil {
 		t.Fatal(err)
 	}
-	second := &ExportDiff{Updated: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo (v2)"}}}
+	second := &ExportDiff{Updated: []DiffEntry{{Slug: "bar", Category: "tier1", Name: "Bar (v2)"}}}
 	if err := AppendChangelog(dir, second, when, "second note"); err != nil {
 		t.Fatal(err)
 	}
@@ -122,16 +125,86 @@ func TestAppendChangelogSameDayReplaces(t *testing.T) {
 		t.Errorf("same-day entries must collapse to one section, got:\n%s", got)
 	}
 	if strings.Contains(got, "first note") {
-		t.Errorf("first note should have been replaced, got:\n%s", got)
+		t.Errorf("first note should have been replaced by second, got:\n%s", got)
 	}
 	if !strings.Contains(got, "second note") {
 		t.Errorf("second note missing:\n%s", got)
 	}
-	if strings.Contains(got, "### Added") {
-		t.Errorf("first diff's Added group should have been replaced by second's Updated:\n%s", got)
+	// The merge keeps the morning's Added entry alongside the afternoon's Updated entry.
+	if !strings.Contains(got, "### Added\n- `foo`") {
+		t.Errorf("first diff's Added entry must survive same-day merge:\n%s", got)
 	}
-	if !strings.Contains(got, "### Updated") {
-		t.Errorf("second diff's Updated group missing:\n%s", got)
+	if !strings.Contains(got, "### Updated\n- `bar`") {
+		t.Errorf("second diff's Updated entry missing:\n%s", got)
+	}
+}
+
+// TestAppendChangelogSameDayUpsertsSameSlug — re-touching the same
+// rule later in the day replaces just that bullet, preserving any
+// comment from the new entry. Sibling rules in the same group survive
+// untouched.
+func TestAppendChangelogSameDayUpsertsSameSlug(t *testing.T) {
+	dir := t.TempDir()
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	morning := &ExportDiff{
+		Added: []DiffEntry{
+			{Slug: "alpha", Category: "tier1", Name: "Alpha"},
+			{Slug: "bravo", Category: "tier1", Name: "Bravo"},
+		},
+	}
+	if err := AppendChangelog(dir, morning, when, "morning batch"); err != nil {
+		t.Fatal(err)
+	}
+	// User revisits "alpha" later and adds a comment.
+	afternoon := &ExportDiff{
+		Added: []DiffEntry{
+			{Slug: "alpha", Category: "tier1", Name: "Alpha", Comment: "renamed for SQP"},
+		},
+	}
+	if err := AppendChangelog(dir, afternoon, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	if strings.Count(got, "- `alpha`") != 1 {
+		t.Errorf("alpha must appear once after upsert, got:\n%s", got)
+	}
+	if !strings.Contains(got, "- `alpha` (tier1) — Alpha — *renamed for SQP*") {
+		t.Errorf("alpha bullet should carry the new comment:\n%s", got)
+	}
+	if !strings.Contains(got, "- `bravo` (tier1) — Bravo") {
+		t.Errorf("bravo should survive the merge:\n%s", got)
+	}
+	// Empty fresh note must keep the morning note in place.
+	if !strings.Contains(got, "morning batch") {
+		t.Errorf("empty fresh note should preserve existing note:\n%s", got)
+	}
+}
+
+// TestAppendChangelogSameDayPreservesGroupOrder — group order on disk
+// stays stable across multiple commits in the same day. Pre-existing
+// groups keep their position; new groups append after them.
+func TestAppendChangelogSameDayPreservesGroupOrder(t *testing.T) {
+	dir := t.TempDir()
+	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
+	// First: just an Updated section.
+	first := &ExportDiff{Updated: []DiffEntry{{Slug: "u", Category: "tier1", Name: "U"}}}
+	if err := AppendChangelog(dir, first, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	// Second: Added on top of the same day. Expect Updated first
+	// (existing position) then Added appended after.
+	second := &ExportDiff{Added: []DiffEntry{{Slug: "a", Category: "tier1", Name: "A"}}}
+	if err := AppendChangelog(dir, second, when, ""); err != nil {
+		t.Fatal(err)
+	}
+	got := readChangelog(t, dir)
+	updIdx := strings.Index(got, "### Updated")
+	addIdx := strings.Index(got, "### Added")
+	if updIdx < 0 || addIdx < 0 {
+		t.Fatalf("both group headings should exist:\n%s", got)
+	}
+	if updIdx > addIdx {
+		t.Errorf("existing group order must be preserved; Updated should precede Added when first commit had Updated:\n%s", got)
 	}
 }
 
@@ -264,8 +337,10 @@ func TestCurrentExportNote(t *testing.T) {
 }
 
 // TestAppendChangelogSameDayHeadingWithSuffix — hand-edited heading
-// like "## 2026-04-19 (release)" still counts as the same day and
-// gets replaced.
+// like "## 2026-04-19 (release)" still counts as the same day. Under
+// the v0.4.2 merge semantics, both the user's heading suffix and the
+// existing Added bullet are preserved across a same-day commit; the
+// note is replaced when the fresh commit supplies a non-empty one.
 func TestAppendChangelogSameDayHeadingWithSuffix(t *testing.T) {
 	dir := t.TempDir()
 	initial := changelogHeader + "\n## 2026-04-19 (release)\n\nhand-edited content\n\n### Added\n- `foo` (tier1) — Foo\n\n"
@@ -273,19 +348,25 @@ func TestAppendChangelogSameDayHeadingWithSuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	when := time.Date(2026, 4, 19, 0, 0, 0, 0, time.UTC)
-	diff := &ExportDiff{Updated: []DiffEntry{{Slug: "foo", Category: "tier1", Name: "Foo"}}}
+	diff := &ExportDiff{Updated: []DiffEntry{{Slug: "bar", Category: "tier1", Name: "Bar"}}}
 	if err := AppendChangelog(dir, diff, when, "replacement"); err != nil {
 		t.Fatal(err)
 	}
 	got := readChangelog(t, dir)
-	if strings.Contains(got, "(release)") {
-		t.Errorf("hand-edited heading survived — should have been replaced:\n%s", got)
+	if !strings.Contains(got, "(release)") {
+		t.Errorf("hand-edited heading suffix must be preserved:\n%s", got)
 	}
 	if strings.Contains(got, "hand-edited content") {
-		t.Errorf("old content survived:\n%s", got)
+		t.Errorf("non-empty fresh note must replace existing note:\n%s", got)
 	}
 	if !strings.Contains(got, "replacement") {
 		t.Errorf("new note missing:\n%s", got)
+	}
+	if !strings.Contains(got, "- `foo` (tier1) — Foo") {
+		t.Errorf("existing Added bullet must survive the merge:\n%s", got)
+	}
+	if !strings.Contains(got, "- `bar` (tier1) — Bar") {
+		t.Errorf("new Updated bullet missing:\n%s", got)
 	}
 	if strings.Count(got, "## 2026-04-19") != 1 {
 		t.Errorf("must end with a single section for that date:\n%s", got)

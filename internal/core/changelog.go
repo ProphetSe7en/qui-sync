@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -12,9 +13,27 @@ const changelogHeader = "# Changelog\n\nAll notable changes to this automations 
 
 // AppendChangelog writes today's export section to CHANGELOG.md.
 //
-// If the existing top section is for the same date, it is REPLACED
-// rather than a duplicate prepended — re-running export on the same
-// day should collapse to a single up-to-date entry.
+// If the existing top section is for the same date, the fresh section
+// is MERGED into it rather than replacing it wholesale — earlier
+// commits on the same day stay visible in CHANGELOG.md, with later
+// commits' entries upserted by slug. This matters since v0.4.1: with
+// per-rule include filters the second Commit of a day can include only
+// a tiny subset of rules, and the old "replace" behaviour was losing
+// the morning's entries from the file. Git history of CHANGELOG.md
+// still retains every prior state, so nothing is irrecoverably lost
+// either way — this just makes the working copy reflect "everything I
+// pushed today" instead of "only the last batch I pushed today".
+//
+// Merge semantics:
+//   - Bullets are keyed by (group, slug). Same-slug entries: later wins
+//     (the new bullet replaces the old one, including its comment).
+//     Different-slug entries are added to the group.
+//   - Groups present in the existing section survive even when the fresh
+//     diff has nothing in them.
+//   - The global note: a fresh non-empty note replaces the existing one;
+//     an empty fresh note preserves whatever the existing section had.
+//   - Bullets the parser can't decode (hand-edited / unusual format)
+//     are preserved verbatim, anchored by their original position.
 //
 // note is the free-form markdown the maintainer typed into the Export
 // panel (empty string = no note paragraph).
@@ -40,7 +59,8 @@ func AppendChangelog(repoDir string, diff *ExportDiff, when time.Time, note stri
 	}
 
 	header, rest := splitHeader(string(existing))
-	if _, remainder, found := peelTopSectionForDate(rest, date); found {
+	if existingTop, remainder, found := peelTopSectionForDate(rest, date); found {
+		section = mergeSameDaySections(existingTop, section)
 		rest = remainder
 	}
 	return os.WriteFile(path, []byte(header+section+rest), 0o644)
@@ -256,4 +276,212 @@ func writeCommentSuffix(sb *strings.Builder, comment string) {
 	c = strings.ReplaceAll(c, "\n", " ")
 	c = strings.ReplaceAll(c, "*", `\*`)
 	fmt.Fprintf(sb, " — *%s*", c)
+}
+
+// --- same-day merge ----------------------------------------------------
+//
+// parsedSection is the structured form of one "## DATE" block. The
+// merge layer parses both the existing top section and the fresh
+// freshly-rendered section into this shape, upserts fresh into
+// existing, then renders the merged result back to markdown.
+//
+// "groupOrder" preserves the section order as it was encountered (or
+// canonical order for fresh sections). New groups added by a fresh
+// commit get appended after existing groups so the user's visual
+// ordering on disk stays stable as much as possible.
+
+type parsedBullet struct {
+	// slug is the key inside the first backticks of a "- `slug` ..."
+	// line. Empty when the bullet cannot be parsed — in that case the
+	// raw line is preserved verbatim and excluded from upsert matching.
+	slug string
+	// line is the bullet's full text, including the leading "- "
+	// marker and any trailing comment suffix, no newline.
+	line string
+}
+
+type parsedGroup struct {
+	heading string // e.g. "### Added"
+	// bullets retains insertion order. We don't dedupe by slug here —
+	// merge does that step explicitly so the ordering is deterministic.
+	bullets []parsedBullet
+}
+
+type parsedSection struct {
+	heading    string // first line, e.g. "## 2026-05-17" or "## 2026-05-17 (release)"
+	note       string // free-form paragraph between heading and first ### group, trimmed
+	groups     []parsedGroup
+	groupIndex map[string]int // heading -> index into groups
+}
+
+// bulletRe captures the slug between the first pair of backticks on a
+// "- " line. Hand-edited bullets that don't follow this exact shape
+// get preserved verbatim with slug=="".
+var bulletRe = regexp.MustCompile("^- `([^`]+)`")
+
+// parseSection breaks a "## DATE\n..." block into structured form so
+// it can be merged with a freshly rendered section. The input must
+// begin with "## ". An empty or malformed input returns a section
+// with the original text stuck in heading — caller should fall back
+// to "replace" in that case (mergeSameDaySections handles it).
+func parseSection(s string) parsedSection {
+	out := parsedSection{groupIndex: map[string]int{}}
+	if !strings.HasPrefix(s, "## ") {
+		return out
+	}
+	eol := strings.Index(s, "\n")
+	if eol < 0 {
+		out.heading = strings.TrimRight(s, "\n")
+		return out
+	}
+	out.heading = strings.TrimRight(s[:eol], "\n")
+	rest := s[eol+1:]
+
+	// Drop one optional blank line after the heading.
+	if strings.HasPrefix(rest, "\n") {
+		rest = rest[1:]
+	}
+
+	// Note paragraph: everything up to the first "### " line (or end of
+	// section). Could be empty.
+	var groupsPart string
+	if strings.HasPrefix(rest, "### ") {
+		out.note = ""
+		groupsPart = rest
+	} else if i := strings.Index(rest, "\n### "); i >= 0 {
+		out.note = strings.TrimSpace(rest[:i])
+		groupsPart = rest[i+1:]
+	} else {
+		out.note = strings.TrimSpace(rest)
+		groupsPart = ""
+	}
+
+	// Now split groupsPart into "### Heading\n<bullets>\n" chunks.
+	lines := strings.Split(groupsPart, "\n")
+	var current *parsedGroup
+	for _, line := range lines {
+		if strings.HasPrefix(line, "### ") {
+			out.groups = append(out.groups, parsedGroup{heading: strings.TrimRight(line, "\r")})
+			current = &out.groups[len(out.groups)-1]
+			out.groupIndex[current.heading] = len(out.groups) - 1
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		if !strings.HasPrefix(line, "- ") {
+			// Continuation or weirdness — attach to the previous
+			// bullet if one exists, otherwise drop. Keeps multi-line
+			// hand-edits associated with their bullet.
+			if len(current.bullets) > 0 {
+				current.bullets[len(current.bullets)-1].line += "\n" + line
+			}
+			continue
+		}
+		b := parsedBullet{line: line}
+		if m := bulletRe.FindStringSubmatch(line); len(m) == 2 {
+			b.slug = m[1]
+		}
+		current.bullets = append(current.bullets, b)
+	}
+	return out
+}
+
+// mergeSameDaySections merges a fresh section into an existing one for
+// the same date. Returns the merged section as a markdown string with a
+// single trailing blank line — same shape as renderSection's output.
+//
+// If parsing fails outright (existing isn't a recognisable section),
+// the fresh section is returned unchanged, matching the pre-merge
+// "replace" behaviour as a safe fallback.
+func mergeSameDaySections(existing, fresh string) string {
+	e := parseSection(existing)
+	f := parseSection(fresh)
+	if e.heading == "" {
+		return fresh
+	}
+
+	merged := parsedSection{
+		heading:    e.heading, // preserve any user suffix on the date line
+		groupIndex: map[string]int{},
+	}
+
+	// Note merge: fresh non-empty wins, else keep existing.
+	if f.note != "" {
+		merged.note = f.note
+	} else {
+		merged.note = e.note
+	}
+
+	// Copy existing groups (with their bullets) into merged so order is
+	// preserved. We then upsert fresh entries on top.
+	for _, g := range e.groups {
+		merged.groups = append(merged.groups, parsedGroup{
+			heading: g.heading,
+			bullets: append([]parsedBullet(nil), g.bullets...),
+		})
+		merged.groupIndex[g.heading] = len(merged.groups) - 1
+	}
+
+	// Upsert fresh entries.
+	for _, fg := range f.groups {
+		idx, ok := merged.groupIndex[fg.heading]
+		if !ok {
+			merged.groups = append(merged.groups, parsedGroup{heading: fg.heading})
+			idx = len(merged.groups) - 1
+			merged.groupIndex[fg.heading] = idx
+		}
+		target := &merged.groups[idx]
+		for _, fb := range fg.bullets {
+			if fb.slug == "" {
+				// Unparseable bullet from the fresh side — just append.
+				// Should be rare since renderSection's output is always
+				// parseable.
+				target.bullets = append(target.bullets, fb)
+				continue
+			}
+			replaced := false
+			for i := range target.bullets {
+				if target.bullets[i].slug == fb.slug {
+					target.bullets[i] = fb // later wins
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				target.bullets = append(target.bullets, fb)
+			}
+		}
+	}
+
+	return renderParsedSection(merged)
+}
+
+// renderParsedSection writes a parsedSection back as markdown. The
+// output ends with a trailing blank line so it concatenates cleanly
+// with whatever follows in the file.
+func renderParsedSection(p parsedSection) string {
+	var sb strings.Builder
+	sb.WriteString(p.heading)
+	sb.WriteString("\n\n")
+	if p.note != "" {
+		sb.WriteString(p.note)
+		sb.WriteString("\n\n")
+	}
+	for _, g := range p.groups {
+		if len(g.bullets) == 0 {
+			continue
+		}
+		sb.WriteString(g.heading)
+		sb.WriteString("\n")
+		for _, b := range g.bullets {
+			sb.WriteString(b.line)
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

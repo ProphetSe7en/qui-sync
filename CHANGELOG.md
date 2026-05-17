@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.4.2-dev
+
+Same-day Commits now stack in `CHANGELOG.md` instead of overwriting
+each other. This pairs with v0.4.1's per-rule include filter: an
+afternoon Commit that publishes a single rule no longer wipes the
+morning's entries from the file.
+
+### Fixed — Publish
+
+- **CHANGELOG.md preserves earlier-today entries on a same-day Commit.**
+  Before: the second Commit of the day rewrote today's section with
+  only its own changes, dropping the morning's bullets. After: bullets
+  from earlier commits stay; new entries are merged in (same rule
+  appearing twice = later wins, comment updates).
+- The global "Edit note" still wins when you type a new one. A blank
+  note on a follow-up Commit leaves the existing note alone instead of
+  blanking it out.
+- Hand-edited heading suffixes (e.g. `## 2026-05-17 (release)`) and
+  manual bullets you added by hand survive the merge.
+
+### Notes
+
+Git history of `CHANGELOG.md` was always intact (every export creates
+its own commit and the file's prior state is in `git log`). The fix is
+in the working-copy file you actually look at on GitHub — now reads
+"everything I pushed today" instead of "only the last batch".
+
 ## v0.4.1-dev
 
 Publish-side ergonomics: pick which changes go up this round, optionally
