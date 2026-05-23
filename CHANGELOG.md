@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.4-dev
+
+### Fixed — Hide backups from GitHub
+
+The "Hide backups from GitHub" toggle now covers per-rule export
+backups in addition to full-instance snapshots. Before, only
+snapshots from the Backup tab were ignored — the smaller
+`<rule>-<date>.json` files Publish creates when a rule is modified
+or replaced still ended up pushed on the next Commit. One check now
+stops both kinds.
+
+Files already on GitHub stay there until you remove them manually —
+the toggle only stops future Commits from including them.
+
+### Changed — Trusted proxies accepts CIDR ranges
+
+`TRUSTED_PROXIES` now accepts CIDR ranges (e.g. `172.19.0.0/24`)
+alongside literal IPs. Useful for reverse-proxy deployments where
+the proxy runs on a Docker bridge with dynamic container IPs — one
+CIDR covers every container instead of listing each one.
+
 ## v0.4.3-dev
 
 Newest entries land at the top of each section. v0.4.2 merged

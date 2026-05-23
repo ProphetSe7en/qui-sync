@@ -82,7 +82,7 @@ const (
 type Config struct {
 	Mode             AuthMode
 	Requirement      Requirement
-	TrustedProxies   []net.IP
+	TrustedProxies   []*net.IPNet
 	// TrustedNetworks is the user-curated list of IPs/CIDRs that bypass auth
 	// when Requirement == RequireExtLocal. Empty means: fall back to the
 	// hardcoded default (loopback + RFC1918 + link-local + ULA — Radarr
@@ -963,7 +963,7 @@ func (s *Store) IsRequestFromTrustedProxy(r *http.Request) bool {
 		return false
 	}
 	for _, tp := range tps {
-		if tp.Equal(peer) {
+		if tp != nil && tp.Contains(peer) {
 			return true
 		}
 	}
