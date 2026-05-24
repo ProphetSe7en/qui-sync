@@ -47,7 +47,15 @@ jobs:
         with:
           context: .
           push: true
-          platforms: linux/amd64,linux/arm64
+          # amd64-only TEMPORARILY (2026-05-25). arm64 build kept
+          # failing under QEMU after the v0.5.0-dev customize feature
+          # added jsondiff + evanphx/json-patch deps. Local amd64
+          # build clean; QEMU arm64 produces exit-1 from `go build`
+          # with no actionable stderr accessible without admin
+          # log-download rights. Stripping arm64 unblocks tester
+          # soak on amd64 Unraid; re-add once the arm64 failure is
+          # diagnosed (likely QEMU OOM or cache pollution).
+          platforms: linux/amd64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
