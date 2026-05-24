@@ -247,8 +247,9 @@ type excludeReq struct {
 // ---- Qui connection edit ----
 
 type quiConfigReq struct {
-	URL    string `json:"url"`
-	APIKey string `json:"api_key,omitempty"` // optional — empty means "don't change"
+	URL        string `json:"url"`
+	BrowserURL string `json:"browser_url,omitempty"` // optional — public URL for in-UI deep-links; empty falls back to URL
+	APIKey     string `json:"api_key,omitempty"`     // optional — empty means "don't change"
 }
 
 func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
@@ -267,6 +268,11 @@ func (s *Server) handleUpdateQuiConfig(w http.ResponseWriter, r *http.Request) {
 	cfg := s.getConfig()
 	newCfg := *cfg
 	newCfg.Qui.URL = req.URL
+	// BrowserURL is always replaced (including with empty) so the
+	// user can clear it explicitly. Trimmed for whitespace from
+	// copy-paste; trailing slash kept as-is — the deep-link builder
+	// strips it.
+	newCfg.Qui.BrowserURL = strings.TrimSpace(req.BrowserURL)
 
 	// If the user provided a new key, write it to the configured key file
 	// (or create a default one). We never put the secret in config.yml.

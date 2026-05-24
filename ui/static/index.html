@@ -1222,8 +1222,25 @@
       <div class="panel-body">
         <div class="form-grid">
           <label>URL</label>
-          <input class="input" x-model="quiDraft.url" placeholder="http://qui.local:7476"
-                 autocomplete="off" data-1p-ignore data-lpignore="true" spellcheck="false">
+          <div>
+            <input class="input" x-model="quiDraft.url" placeholder="http://qui.local:7476" style="width:100%"
+                   autocomplete="off" data-1p-ignore data-lpignore="true" spellcheck="false">
+            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
+              The address <b>qui-sync's server</b> uses to talk to Qui. Inside Docker, often a
+              container name like <code>http://qui:7476</code> or <code>http://qbittorrent-network:7476</code>.
+            </div>
+          </div>
+          <label>Browser URL <span class="dim" style="font-weight:normal">(optional)</span></label>
+          <div>
+            <input class="input" x-model="quiDraft.browserUrl" placeholder="Leave blank to use URL above" style="width:100%"
+                   autocomplete="off" data-1p-ignore data-lpignore="true" spellcheck="false">
+            <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
+              The address <b>your browser</b> uses to reach Qui's web UI — used by the "Open in Qui ↗"
+              deep-link in the Customize flow. Set this when URL above is a Docker container name or
+              an internal hostname that your browser can't resolve. Example: <code>http://192.168.0.10:7476</code>
+              or <code>https://qui.yourdomain.com</code>. Leave blank if URL is browser-reachable.
+            </div>
+          </div>
           <label>API key</label>
           <div>
             <input class="input" type="password" x-model="quiDraft.apiKey" style="width:100%"
@@ -1457,6 +1474,8 @@
                         <th>Repo rule</th>
                         <th style="width:260px">Link to Qui rule</th>
                         <th style="width:80px">Auto</th>
+                        <th style="width:90px"
+                            title="Customize: keep personal edits to this rule across upstream updates. Toggle ON enables Detect changes; toggle OFF deletes any stored customization.">Customize</th>
                         <th style="width:100px">Action</th>
                       </tr>
                     </thead>
@@ -1477,6 +1496,39 @@
                             <div x-text="rule.name"></div>
                             <div class="dim" style="font-family:var(--font-mono); font-size:var(--font-xs)"
                                  x-text="rule.repo_path"></div>
+                            <!-- Customize-related state row. Only renders when relevant
+                                 (Customizing on, OR a stored customization exists, OR
+                                 the rule was flagged needs-review on last apply). Keeps
+                                 clean rules clean and pushes the customize affordances
+                                 only where they matter. -->
+                            <template x-if="rule.customizing || rule.has_customization || needsReviewFor(sub.slug, rule)">
+                              <div style="display:flex; gap:6px; align-items:center; margin-top:6px; flex-wrap:wrap">
+                                <template x-if="needsReviewFor(sub.slug, rule)">
+                                  <span class="badge badge-amber" style="font-weight:600"
+                                        title="Last sync couldn't apply your customization — upstream may have restructured this rule. Click Resolve to review.">⚠ Needs review</span>
+                                </template>
+                                <template x-if="rule.has_customization && !needsReviewFor(sub.slug, rule)">
+                                  <span class="badge badge-green" style="font-weight:600"
+                                        title="Your personal customization is applied on every upstream sync.">Customized</span>
+                                </template>
+                                <template x-if="rule.customizing && !rule.has_customization && !needsReviewFor(sub.slug, rule)">
+                                  <span class="badge" style="font-weight:600"
+                                        title="Customize is on but you haven't captured any changes yet. Edit the rule in Qui, then click Detect changes.">Customize ON · no diff yet</span>
+                                </template>
+                                <template x-if="rule.customizing">
+                                  <button class="btn btn-sm" @click="detectChanges(sub.slug, rule)"
+                                          title="Read your current Qui rule and capture any differences from upstream as a personal customization.">Detect changes</button>
+                                </template>
+                                <template x-if="rule.customizing && quiAutomationsURL(planBySub[sub.slug].qui_instance_id)">
+                                  <a class="btn btn-sm" :href="quiAutomationsURL(planBySub[sub.slug].qui_instance_id)" target="_blank" rel="noopener noreferrer"
+                                     title="Open Qui's automations page in a new tab — edit this rule there, then come back and click Detect changes.">Open in Qui ↗</a>
+                                </template>
+                                <template x-if="needsReviewFor(sub.slug, rule)">
+                                  <button class="btn btn-sm" @click="openConflictModal(sub.slug, rule)"
+                                          title="Show the conflict and choose: re-capture from your current Qui state, drop your customization, or keep it and skip this sync.">Resolve…</button>
+                                </template>
+                              </div>
+                            </template>
                           </td>
                           <td>
                             <!-- :selected per-option (not :value on the select) — Alpine's
@@ -1510,6 +1562,20 @@
                                    :checked="rule.auto_sync"
                                    title="Auto-sync this rule on future pulls. Persisted at Apply time for new rules; takes effect immediately for already-applied rules."
                                    @change="toggleAutoSync(sub.slug, rule)">
+                          </td>
+                          <td style="text-align:center">
+                            <!-- Customize toggle — only meaningful for rules that
+                                 have an actual link to a Qui rule (update_existing).
+                                 Skip + create_new have no live Qui rule to diff
+                                 against yet, so the toggle is disabled there with
+                                 a tooltip explaining why. -->
+                            <input type="checkbox"
+                                   :checked="rule.customizing"
+                                   :disabled="rule.action !== 'update_existing'"
+                                   :title="rule.action === 'update_existing'
+                                     ? 'Turn ON to keep personal edits to this rule across upstream updates. Turn OFF to drop any stored customization and follow upstream cleanly.'
+                                     : 'Customize requires this rule to be linked to a Qui rule (Action = update_existing). Set a link first.'"
+                                   @change="toggleCustomizing(sub.slug, rule)">
                           </td>
                           <td>
                             <span x-show="rule.action === 'create_new'" class="badge badge-green">CREATE</span>
@@ -1928,6 +1994,164 @@
       <button class="btn" @click="modalCancel()" x-text="modal.cancelLabel"></button>
       <button class="btn btn-primary" @click="modalConfirm()"
               x-text="modal.confirmLabel" x-ref="modalConfirmBtn"></button>
+    </div>
+  </div>
+</div>
+
+<!-- Capture modal — shown when user clicks Detect changes. Previews
+     the diff between upstream + live Qui state before persisting it
+     as a customization. -->
+<div class="modal-backdrop" x-show="captureModal.open" @keydown.escape.window="closeCaptureModal()"
+     x-transition.opacity style="display:none">
+  <div class="modal" @click.stop style="width:680px; max-width:90vw">
+    <div class="modal-title">
+      Detect changes — <span x-text="captureModal.rule ? captureModal.rule.name : ''"></span>
+    </div>
+    <div class="modal-body">
+      <div x-show="captureModal.loading" class="dim">Reading your Qui rule and comparing to upstream…</div>
+
+      <template x-if="!captureModal.loading && captureModal.result && !captureModal.result.has_changes">
+        <div>
+          <p>No <b>structural</b> changes detected — there's nothing here that needs a customization.</p>
+          <p class="dim" style="font-size:var(--font-sm); margin-top:10px; line-height:1.5">
+            qui-sync automatically preserves the following fields from your Qui rule on every sync — you never need Customize for them:
+          </p>
+          <ul class="dim" style="font-size:var(--font-sm); margin:6px 0 10px 20px; line-height:1.5">
+            <li><code>trackerPattern</code> + <code>trackerDomains</code> — your tracker/indexer selection</li>
+            <li><code>enabled</code>, <code>dryRun</code>, <code>notify</code> — on/off-style toggles</li>
+            <li><code>intervalSeconds</code> — how often the rule runs</li>
+            <li><code>freeSpaceSource</code> — disk-space source config</li>
+          </ul>
+          <p class="dim" style="font-size:var(--font-sm); line-height:1.5">
+            If you edited those, your changes are already kept across upstream updates automatically.
+            Customize is for <b>structural</b> edits like adding a new condition, modifying a threshold value, or changing an action's mode.
+          </p>
+        </div>
+      </template>
+
+      <template x-if="!captureModal.loading && captureModal.result && captureModal.result.has_changes">
+        <div>
+          <p style="margin-bottom:10px">
+            Found <b x-text="(captureModal.result.diff ? captureModal.result.diff.length : 0) + ' change(s)'"></b>
+            in your Qui rule that aren't in upstream. Save them as a personal customization, and qui-sync will keep them applied on every upstream pull.
+          </p>
+
+          <!-- Diff preview — raw JSON Patch for now. Phase 1.4 polish
+               will humanise these into "+ Added condition: TAGS NOT_EQUAL ..."
+               descriptions. For v1 the path + value is enough for users
+               to recognise their own changes.
+               NOTE: captureModal.result.diff is ALREADY a parsed JS array
+               (Go's json.RawMessage round-trips through fetch as a nested
+               JSON value, not a string). Do not JSON.parse it — that
+               throws and Alpine swallows the error, leaving the preview
+               blank. -->
+          <div style="background:var(--panel-bg, #161b22); border:1px solid var(--border); border-radius:4px; padding:10px; font-family:var(--font-mono); font-size:var(--font-xs); max-height:240px; overflow:auto; white-space:pre">
+            <span x-text="captureModal.result.diff ? JSON.stringify(captureModal.result.diff, null, 2) : ''"></span>
+          </div>
+
+          <template x-if="captureModal.result.fragile_ops && captureModal.result.fragile_ops.length > 0">
+            <div style="margin-top:10px; padding:8px 10px; background:rgba(217, 119, 6, 0.12); border-left:3px solid var(--text-warn, #d97706); border-radius:2px; font-size:var(--font-sm)">
+              <b>⚠ Position-sensitive changes</b><br>
+              <span x-text="captureModal.result.fragile_ops.length + ' of your changes target specific positions in the rule. If upstream later reorders, these may need to be re-captured. Append-style edits (the most common case) are robust and not flagged here.'"></span>
+            </div>
+          </template>
+
+          <div style="margin-top:14px">
+            <label style="display:block; font-size:var(--font-sm); margin-bottom:4px">
+              Notes <span class="dim">(optional, max 1024 chars — shown in the conflict screen if upstream restructures later)</span>
+            </label>
+            <textarea class="input" x-model="captureModal.notes" rows="3" maxlength="1024"
+                      style="width:100%; font-family:var(--font-body); font-size:var(--font-sm); resize:vertical"
+                      placeholder="E.g. 'Skip uploads — they should never auto-delete' or 'Threshold raised from 6h to 24h for tier-1 trackers.'"></textarea>
+          </div>
+        </div>
+      </template>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" @click="closeCaptureModal()" :disabled="captureModal.saving">Cancel</button>
+      <template x-if="captureModal.result && captureModal.result.has_changes">
+        <button class="btn btn-primary" @click="submitCapture()"
+                :disabled="captureModal.saving"
+                x-text="captureModal.saving ? 'Saving…' : 'Save customization'"></button>
+      </template>
+    </div>
+  </div>
+</div>
+
+<!-- Conflict resolution modal — shown when a stored customization
+     couldn't be applied at sync time (schema bump, upstream
+     restructured, file unreadable). User picks Re-capture / Drop /
+     Keep-and-skip. -->
+<div class="modal-backdrop" x-show="conflictModal.open" @keydown.escape.window="closeConflictModal()"
+     x-transition.opacity style="display:none">
+  <div class="modal" @click.stop style="width:680px; max-width:90vw">
+    <div class="modal-title">
+      Resolve customization conflict — <span x-text="conflictModal.rule ? conflictModal.rule.name : ''"></span>
+    </div>
+    <div class="modal-body">
+      <div x-show="conflictModal.loading" class="dim">Loading customization…</div>
+
+      <template x-if="!conflictModal.loading">
+        <div>
+          <!-- Conflict reason from the last apply — drives the help copy. -->
+          <template x-if="conflictModal.conflict">
+            <div style="padding:10px 12px; background:rgba(217, 119, 6, 0.12); border-left:3px solid var(--text-warn, #d97706); border-radius:2px; margin-bottom:14px">
+              <div style="font-weight:600" x-text="conflictModal.conflict.kind === 'schema_bump'
+                ? 'Schema version changed upstream'
+                : (conflictModal.conflict.kind === 'version_unsupported'
+                  ? 'Stored customization is in an unsupported format'
+                  : 'Upstream restructured this rule')"></div>
+              <div style="font-size:var(--font-sm); margin-top:4px" x-text="conflictModal.conflict.reason"></div>
+              <template x-if="conflictModal.conflict.patch_err">
+                <div class="dim" style="font-family:var(--font-mono); font-size:var(--font-xs); margin-top:6px"
+                     x-text="conflictModal.conflict.patch_err"></div>
+              </template>
+            </div>
+          </template>
+
+          <!-- Stored customization snapshot — what we tried to apply. -->
+          <template x-if="conflictModal.stored && !conflictModal.stored.unreadable">
+            <div>
+              <div style="font-size:var(--font-sm); font-weight:600; margin-bottom:6px">Your stored customization:</div>
+              <template x-if="conflictModal.stored.notes">
+                <div style="font-style:italic; margin-bottom:8px; color:var(--text-secondary); font-size:var(--font-sm)"
+                     x-text="conflictModal.stored.notes"></div>
+              </template>
+              <!-- conflictModal.stored is the full Customization JSON
+                   from /diff; its .diff field is json.RawMessage on the
+                   wire, which fetch already parses to a JS array.
+                   Don't JSON.parse it (same bug as the capture modal). -->
+              <div style="background:var(--panel-bg, #161b22); border:1px solid var(--border); border-radius:4px; padding:10px; font-family:var(--font-mono); font-size:var(--font-xs); max-height:180px; overflow:auto; white-space:pre"
+                   x-text="conflictModal.stored.diff ? JSON.stringify(conflictModal.stored.diff, null, 2) : ''"></div>
+              <div class="dim" style="font-size:var(--font-xs); margin-top:6px">
+                Captured <span x-text="(conflictModal.stored.updated_at || '').slice(0, 10)"></span>
+                against upstream <span x-text="(conflictModal.stored.base_sha || '').slice(7, 15)"></span>
+              </div>
+            </div>
+          </template>
+
+          <template x-if="conflictModal.stored && conflictModal.stored.unreadable">
+            <div class="dim" style="font-size:var(--font-sm)">
+              Stored customization file couldn't be parsed (<span x-text="conflictModal.stored.error_message || 'unknown error'"></span>).
+              The only safe actions are Re-capture (replace it with a fresh capture) or Drop.
+            </div>
+          </template>
+
+          <div style="margin-top:16px; padding:10px 12px; background:rgba(88, 166, 255, 0.08); border-left:3px solid var(--accent-blue, #58a6ff); border-radius:2px; font-size:var(--font-sm)">
+            <b>How to resolve:</b>
+            <ul style="margin:6px 0 0 0; padding-left:20px; line-height:1.6">
+              <li><b>Re-capture</b> — open the rule in Qui, adjust your edits to match the new upstream shape, then click Detect changes to save a new customization against current upstream.</li>
+              <li><b>Drop</b> — delete this customization. Next sync will apply clean upstream. Your Qui rule keeps its current state until then.</li>
+              <li><b>Close</b> — leave the conflict in place. Sync will skip this rule until you Re-capture or Drop.</li>
+            </ul>
+          </div>
+        </div>
+      </template>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" @click="closeConflictModal()" :disabled="conflictModal.acting">Close</button>
+      <button class="btn btn-danger" @click="conflictDropCustomization()" :disabled="conflictModal.acting">Drop</button>
+      <button class="btn btn-primary" @click="conflictRecapture()" :disabled="conflictModal.acting">Re-capture →</button>
     </div>
   </div>
 </div>

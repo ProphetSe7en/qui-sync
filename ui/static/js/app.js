@@ -52,7 +52,7 @@ function quiSyncApp() {
     modal: { open: false, title: '', body: '', confirmLabel: 'Confirm', cancelLabel: 'Cancel', resolve: null },
     // Settings tab — drafts live outside `config` so user can edit without
     // affecting the displayed config until Save is clicked.
-    quiDraft: { url: '', apiKey: '' },
+    quiDraft: { url: '', browserUrl: '', apiKey: '' },
     // Backup tab — schedules CRUD + global gitignored toggle.
     schedules: [],
     backupGitignored: true,
@@ -538,7 +538,11 @@ function quiSyncApp() {
 
     resetQuiDraft() {
       if (!this.config) return;
-      this.quiDraft = { url: this.config.qui.url || '', apiKey: '' };
+      this.quiDraft = {
+        url: this.config.qui.url || '',
+        browserUrl: this.config.qui.browser_url || '',
+        apiKey: '',
+      };
     },
 
     // disconnectQui wipes the saved Qui URL + API key after a confirm
@@ -563,7 +567,7 @@ function quiSyncApp() {
         // Reload config so the UI clears URL / api_key_present / etc.
         await this.loadConfig();
         // Also clear the local draft so the form mirrors the new state.
-        this.quiDraft = { url: '', apiKey: '' };
+        this.quiDraft = { url: '', browserUrl: '', apiKey: '' };
         this.quiTestResult = '';
         this.quiTestError = '';
         // Drop the cached Qui-side instance list so Subscribe dropdowns
@@ -931,7 +935,10 @@ function quiSyncApp() {
     async saveQuiConfig() {
       this.loading.config = true;
       try {
-        const body = { url: this.quiDraft.url };
+        const body = {
+          url: this.quiDraft.url,
+          browser_url: this.quiDraft.browserUrl || '',
+        };
         if (this.quiDraft.apiKey) body.api_key = this.quiDraft.apiKey;
         await this.apiFetch('/api/config/qui', {
           method: 'PUT',
@@ -1462,6 +1469,270 @@ function quiSyncApp() {
       }
     },
 
+    // ---- Customize toggle + Detect-changes flow (Phase 1.3) ----
+
+    // toggleCustomizing flips the per-rule Customize flag. ON enables
+    // Detect-changes + Open-in-Qui affordances. OFF cascades to
+    // deleting any stored customization (handled server-side per
+    // spec Q9 — "Toggle OFF deletes customization").
+    //
+    // Like toggleAutoSync, this requires the rule to be in state
+    // already (from_state). New rules can't customize before they've
+    // been applied — the UI's :disabled attribute prevents that
+    // already, but we re-check here in case state arrived stale.
+    async toggleCustomizing(slug, rule) {
+      const customizing = !rule.customizing;
+      if (!rule.from_state || rule.action !== 'update_existing') {
+        this.toast('error', 'Customize is only available for linked rules (Action = update_existing). Apply the link first.');
+        return;
+      }
+      // Confirm destructive toggle-off when customization exists.
+      if (!customizing && rule.has_customization) {
+        const ok = await this.confirm({
+          title: 'Turn off Customize?',
+          body: 'This will DELETE your stored customization for "' + rule.name + '" and revert this rule to clean upstream on the next sync. Your edits in Qui aren\'t touched — only qui-sync\'s stored diff is removed. Re-enable Customize and click Detect changes to capture again.',
+          confirmLabel: 'Delete customization',
+          cancelLabel: 'Keep it',
+        });
+        if (!ok) return;
+      }
+      try {
+        await this.apiFetch('/api/subscriptions/' + slug + '/rules/customize', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ repo_path: rule.repo_path, customizing }),
+        });
+        rule.customizing = customizing;
+        if (!customizing) {
+          // Server-side cascade deleted the file too.
+          rule.has_customization = false;
+        }
+      } catch (e) {
+        this.toast('error', 'Toggle Customize: ' + e.message);
+      }
+    },
+
+    // captureModal — state for the Detect-changes confirmation dialog.
+    // Opened by detectChanges(); shows what we'd save before persisting.
+    captureModal: {
+      open: false,
+      slug: '',
+      rule: null,
+      loading: false,
+      result: null,         // { has_changes, diff, fragile_ops, schema_version, upstream_sha }
+      notes: '',
+      saving: false,
+    },
+
+    async detectChanges(slug, rule) {
+      this.captureModal.open = true;
+      this.captureModal.slug = slug;
+      this.captureModal.rule = rule;
+      this.captureModal.result = null;
+      this.captureModal.notes = '';
+      this.captureModal.loading = true;
+      const plan = this.planBySub[slug];
+      try {
+        // Use setup-diff to PREVIEW the capture without persisting.
+        // The save step (handleSubmitCapture) hits /capture which
+        // computes again + persists with notes. Two round-trips but
+        // simpler than splitting capture into preview + commit.
+        this.captureModal.result = await this.apiFetch('/api/subscriptions/setup-diff', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subscription: slug,
+            repo_path: rule.repo_path,
+            qui_instance_id: plan.qui_instance_id,
+            qui_rule_id: rule.qui_rule_id,
+          }),
+        });
+      } catch (e) {
+        this.captureModal.open = false;
+        this.toast('error', 'Detect changes failed: ' + e.message);
+      } finally {
+        this.captureModal.loading = false;
+      }
+    },
+
+    closeCaptureModal() {
+      this.captureModal.open = false;
+      this.captureModal.result = null;
+      this.captureModal.notes = '';
+    },
+
+    async submitCapture() {
+      const m = this.captureModal;
+      if (!m.slug || !m.rule || !m.result) return;
+      if (m.notes.length > 1024) {
+        this.toast('error', 'Notes too long (max 1024 chars).');
+        return;
+      }
+      const plan = this.planBySub[m.slug];
+      m.saving = true;
+      try {
+        // Server's /capture endpoint runs setup-diff again with same
+        // inputs + persists. Two round-trips (preview + save) but
+        // both endpoints share the same compute path, so the SAVED
+        // diff matches what a re-run /setup-diff would produce —
+        // NOT what the modal previewed if Qui state has shifted in
+        // between (user editing in another tab between Detect and
+        // Save). Phase 1.4 polish: pass a base_live_sha back from
+        // setup-diff and have /capture reject if it changed, so
+        // preview→save is bit-stable instead of "compute-stable".
+        const resp = await this.apiFetch('/api/subscriptions/' + m.slug + '/rules/' + encodeURIComponent(m.rule.slug) + '/capture', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            subscription: m.slug,
+            repo_path: m.rule.repo_path,
+            qui_instance_id: plan.qui_instance_id,
+            qui_rule_id: m.rule.qui_rule_id,
+            captured_from: 'post-setup-detect',
+            notes: (m.notes || '').trim(),
+          }),
+        });
+        if (resp.has_changes) {
+          m.rule.has_customization = true;
+          this.toast('info', 'Customization saved for ' + m.rule.name + '.');
+        } else {
+          this.toast('info', 'No changes to capture — your Qui rule matches upstream already.');
+        }
+        this.closeCaptureModal();
+      } catch (e) {
+        this.toast('error', 'Save customization: ' + e.message);
+      } finally {
+        m.saving = false;
+      }
+    },
+
+    // ---- Conflict resolution flow ----
+    //
+    // Rules in NeedsReview surface a "Resolve…" button. Clicking it
+    // opens conflictModal with the stored customization + the
+    // conflict reason from the last apply.
+    //
+    // For Phase 1.3 v1, the modal offers three actions:
+    //   - Re-capture: open Qui in a new tab, then the user can run
+    //                 Detect changes again with fresh live state
+    //   - Drop:       call /reset to delete the customization
+    //   - Keep:       no-op for now (close modal); next sync will
+    //                 surface the same conflict again
+    //
+    // A 3-way diff visualisation (upstream-old vs upstream-new vs
+    // your-edits) is deferred to Phase 1.4 polish — for v1, the
+    // user has the conflict reason + their stored diff and can
+    // make a decision from that.
+    conflictModal: {
+      open: false,
+      slug: '',
+      rule: null,
+      loading: false,
+      stored: null,         // current Customization payload from /diff endpoint
+      conflict: null,       // { kind, reason, patch_err } from last apply
+      acting: false,
+    },
+
+    // needsReviewBySub caches the NeedsReview list from the last
+    // ApplySync per subscription so per-row rendering can quickly
+    // answer "is this rule in conflict?".
+    needsReviewBySub: {},
+
+    needsReviewFor(slug, rule) {
+      const list = this.needsReviewBySub[slug] || [];
+      for (const r of list) {
+        if (r.repo_path === rule.repo_path) return r;
+      }
+      return null;
+    },
+
+    async openConflictModal(slug, rule) {
+      this.conflictModal.open = true;
+      this.conflictModal.slug = slug;
+      this.conflictModal.rule = rule;
+      this.conflictModal.stored = null;
+      this.conflictModal.conflict = this.needsReviewFor(slug, rule);
+      this.conflictModal.loading = true;
+      try {
+        this.conflictModal.stored = await this.apiFetch(
+          '/api/subscriptions/' + slug + '/rules/' + encodeURIComponent(rule.slug) + '/diff'
+        );
+      } catch (e) {
+        this.toast('error', 'Load customization: ' + e.message);
+      } finally {
+        this.conflictModal.loading = false;
+      }
+    },
+
+    closeConflictModal() {
+      this.conflictModal.open = false;
+      this.conflictModal.stored = null;
+      this.conflictModal.conflict = null;
+    },
+
+    async conflictDropCustomization() {
+      const m = this.conflictModal;
+      if (!m.slug || !m.rule) return;
+      const ok = await this.confirm({
+        title: 'Drop customization?',
+        body: 'This will delete your stored customization for "' + m.rule.name + '". Next sync will apply clean upstream. Your Qui rule stays as-is until then.',
+        confirmLabel: 'Drop it',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+      m.acting = true;
+      try {
+        await this.apiFetch(
+          '/api/subscriptions/' + m.slug + '/rules/' + encodeURIComponent(m.rule.slug) + '/reset',
+          { method: 'POST' }
+        );
+        m.rule.has_customization = false;
+        // Removing the customization clears the needs-review state
+        // for next render. Don't need to refresh the whole plan.
+        const list = this.needsReviewBySub[m.slug] || [];
+        this.needsReviewBySub[m.slug] = list.filter(r => r.repo_path !== m.rule.repo_path);
+        this.closeConflictModal();
+        this.toast('info', 'Customization dropped — next sync will apply clean upstream.');
+      } catch (e) {
+        this.toast('error', 'Drop customization: ' + e.message);
+      } finally {
+        m.acting = false;
+      }
+    },
+
+    conflictRecapture() {
+      // Close conflict modal + open capture modal with the same rule.
+      // User typically wants to first open Qui (separate browser tab)
+      // and edit the rule, then click Save in the capture modal. The
+      // existing Detect-changes flow handles re-capture identically
+      // to first-time capture.
+      const slug = this.conflictModal.slug;
+      const rule = this.conflictModal.rule;
+      this.closeConflictModal();
+      if (slug && rule) {
+        this.detectChanges(slug, rule);
+      }
+    },
+
+    // quiAutomationsURL is also used by the per-rule "Open in Qui"
+    // button. Prefers config.qui.browser_url (the URL the user's
+    // BROWSER reaches Qui at — e.g. http://192.168.1.5:7476) over
+    // config.qui.url (the URL qui-sync's server reaches Qui at,
+    // which might be a Docker container name like `http://qui:7476`
+    // that the browser can't resolve). Returns null when neither is
+    // configured, in which case the template short-circuits the
+    // button render entirely.
+    //
+    // instanceID is accepted for forward compatibility (Phase 2 may
+    // use it for per-instance deep links) but currently unused —
+    // Qui's automations page is single per server.
+    quiAutomationsURL(instanceID) {
+      const q = (this.config && this.config.qui) || {};
+      const url = q.browser_url || q.url;
+      if (!url) return null;
+      return url.replace(/\/$/, '') + '/automations';
+    },
+
     // bulkMatchByName re-runs name matching against the loaded Qui
     // rules cache. For every plan rule currently set to create_new (or
     // skip), look for a Qui rule with the exact same name; if found,
@@ -1776,6 +2047,23 @@ function quiSyncApp() {
         const nC = result.created ? result.created.length : 0;
         const nU = result.updated ? result.updated.length : 0;
         const nF = result.failed ? result.failed.length : 0;
+        const nR = result.needs_review ? result.needs_review.length : 0;
+        // Cache needs_review per-subscription so per-row "Resolve…"
+        // buttons can render without an extra fetch. Each call replaces
+        // the slug's cache so dropped customizations don't linger.
+        this.needsReviewBySub[slug] = result.needs_review || [];
+        if (nR > 0) {
+          // Distinct toast from generic failures — Needs Review is a
+          // user-actionable customization conflict, not a backend
+          // error. Surface the count + first rule name so the user
+          // knows where to look.
+          const firstR = result.needs_review[0] || {};
+          const firstName = firstR.name || firstR.repo_path || 'rule';
+          const moreR = nR > 1 ? ' (+' + (nR - 1) + ' more)' : '';
+          this.toast('error',
+            'Customization conflict on ' + firstName + moreR + ' — click "Resolve…" on the affected rule to handle.',
+            20000);
+        }
         if (nF > 0) {
           // Surface the actual error reason so the user knows WHY the
           // rule failed — the backend populates Error on every failed

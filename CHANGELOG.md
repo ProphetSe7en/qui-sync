@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.5.0-dev
+
+### New — Customize subscribed rules
+
+You can now keep your personal edits to subscribed rules across upstream
+updates.
+
+On the Subscribe tab, every linked rule has a new **Customize** toggle.
+Turn it on, edit the rule directly in Qui, then click **Detect changes**
+to save your edits as a personal customization. qui-sync re-applies them
+on every sync — so when the maintainer updates the rule, you get their
+changes alongside your personal touches.
+
+Two safety nets:
+
+- **Setup-time check.** When you Plan a fresh subscription against a Qui
+  rule that already differs from upstream, qui-sync flags it before the
+  first sync overwrites anything.
+- **Conflict resolution.** If upstream restructures a rule in a way that
+  breaks your customization, you get a clear notice with three choices —
+  Re-capture (edit again to match the new shape), Drop (revert to
+  upstream), or Close (leave it for later).
+
+Tracker patterns, enabled state, intervals, and other user-owned fields
+are still preserved automatically — Customize is only needed for
+structural edits like adding/modifying conditions or changing an
+action's mode.
+
+### New — Browser URL setting for "Open in Qui"
+
+Settings → Qui connection has a new optional **Browser URL** field. Set
+it when the URL qui-sync uses to talk to Qui (often a Docker container
+name like `http://qui:7476`) differs from what your browser reaches
+Qui at (e.g. `http://192.168.0.10:7476`). Leave it blank if your URL is
+already browser-reachable. Used by the "Open in Qui ↗" deep-link in
+the Customize flow.
+
 ## v0.4.4-dev
 
 ### Fixed — Hide backups from GitHub

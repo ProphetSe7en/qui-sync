@@ -84,6 +84,17 @@ type QuiConfig struct {
 	URL        string `yaml:"url"`
 	APIKey     string `yaml:"api_key,omitempty"`
 	APIKeyFile string `yaml:"api_key_file,omitempty"`
+	// BrowserURL is the URL the USER'S BROWSER uses to reach Qui's
+	// web UI. Distinct from URL, which is the server-to-server URL
+	// qui-sync uses to talk to Qui's API and may be a Docker container
+	// name (`http://qui:7476`), a localhost path, or otherwise not
+	// reachable from a remote browser. When BrowserURL is empty the
+	// UI falls back to URL — fine for users running everything on
+	// one machine, breaks for reverse-proxy + Docker-network setups.
+	// Surfaced in the "Open in Qui" deep-link from the Customize
+	// flow; empty value disables the button (template short-circuits
+	// to null).
+	BrowserURL string `yaml:"browser_url,omitempty"`
 }
 
 type ExportInstance struct {

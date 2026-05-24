@@ -209,6 +209,14 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/instances", s.handleAddInstance)
 	mux.HandleFunc("DELETE /api/instances/{id}", s.handleRemoveInstance)
 
+	// Personal customizations (Phase 1.2). See
+	// dev/docs/personal-overrides-spec.md for design.
+	mux.HandleFunc("POST /api/subscriptions/setup-diff", s.handleSetupDiff)
+	mux.HandleFunc("PUT /api/subscriptions/{sub}/rules/customize", s.handleSetRuleCustomizing)
+	mux.HandleFunc("POST /api/subscriptions/{sub}/rules/{slug}/capture", s.handleCaptureCustomization)
+	mux.HandleFunc("POST /api/subscriptions/{sub}/rules/{slug}/reset", s.handleResetCustomization)
+	mux.HandleFunc("GET /api/subscriptions/{sub}/rules/{slug}/diff", s.handleGetCustomizationDiff)
+
 	// Static UI. http.FileServer maps "/" to index.html, "/css/styles.css"
 	// to ui/static/css/styles.css, etc. — auth middleware allowlists the
 	// /css/, /js/, /icons/ prefixes so they serve pre-login.

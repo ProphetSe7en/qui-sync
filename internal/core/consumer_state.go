@@ -84,6 +84,13 @@ type SubRuleStateData struct {
 	//      want it active again", mirroring the conservative "new rules
 	//      are never auto-applied" rule. User stays in control.
 	DeactivatedBecauseRemoved bool `json:"deactivated_because_removed,omitempty"`
+	// Customizing: user has turned on the per-rule Customize toggle.
+	// When true, the UI shows the Detect-changes button + Open-in-Qui
+	// deep-link, and pauses overwriting auto-sync of structural fields
+	// for the rule (auto-preserved scalars still merge normally).
+	// Toggling OFF cascades to deleting any stored customization file
+	// for this rule per spec Q9. See dev/docs/personal-overrides-spec.md.
+	Customizing bool `json:"customizing,omitempty"`
 }
 
 // DefaultPreservedFields lists the user-owned rule fields that survive
@@ -325,6 +332,26 @@ func (s *ConsumerState) SetRuleAutoSync(slug, repoPath string, autoSync bool) bo
 		return false
 	}
 	r.AutoSync = autoSync
+	return true
+}
+
+// SetRuleCustomizing flips the per-rule Customize toggle. Returns
+// false when the rule isn't yet in state — Customize only makes
+// sense for rules with a recorded subscription mapping. The handler
+// is responsible for the storage-side cascade (delete customization
+// file on toggle-off) per spec Q9.
+func (s *ConsumerState) SetRuleCustomizing(slug, repoPath string, customizing bool) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub := s.subscriptionLocked(slug)
+	if sub == nil {
+		return false
+	}
+	r := sub.Rules[repoPath]
+	if r == nil {
+		return false
+	}
+	r.Customizing = customizing
 	return true
 }
 

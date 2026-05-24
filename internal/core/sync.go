@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/prophetse7en/qui-sync/internal/core/customize"
 )
 
 // ---- Plan types (server → client) ----
@@ -48,6 +50,17 @@ type SyncPlanRule struct {
 	// AutoSync: true if the rule will be auto-applied on background pulls.
 	// Only meaningful when FromState is true (must Apply manually first).
 	AutoSync bool `json:"auto_sync"`
+	// Customizing: true if the per-rule Customize toggle is ON. UI
+	// uses this to show Detect-changes + Open-in-Qui affordances.
+	Customizing bool `json:"customizing,omitempty"`
+	// HasCustomization: true if a stored customization file exists for
+	// this rule under <state>/customizations/<sub>/<slug>.json. Reflects
+	// the OUTCOME of past Detect-changes captures, separate from the
+	// toggle state — a rule can have Customizing=true but
+	// HasCustomization=false (toggle ON, no Detect run yet) or
+	// Customizing=false but HasCustomization=true (orphaned file —
+	// extremely rare, would happen if state was hand-edited).
+	HasCustomization bool `json:"has_customization,omitempty"`
 }
 
 // SyncPlanSuggestion is the rationale the UI shows for the default pick.
@@ -144,6 +157,12 @@ type SyncApplyResult struct {
 	Skipped     []SyncApplyOutcome `json:"skipped"`
 	Failed      []SyncApplyOutcome `json:"failed"`
 	Deactivated []SyncApplyOutcome `json:"deactivated"`
+	// NeedsReview holds rules where a stored customization could not be
+	// applied to the new upstream — schema bumped, or a diff op's path
+	// no longer exists. The rule was NOT pushed to Qui; user must
+	// resolve via the conflict UI (Re-capture / Drop / Keep-and-skip).
+	// Empty in the common case where every customization applies cleanly.
+	NeedsReview []SyncApplyOutcome `json:"needs_review,omitempty"`
 }
 
 type SyncApplyOutcome struct {
@@ -151,6 +170,21 @@ type SyncApplyOutcome struct {
 	QuiRuleID int    `json:"qui_rule_id,omitempty"`
 	Name      string `json:"name"`
 	Error     string `json:"error,omitempty"`
+	// Conflict is non-nil ONLY for entries in SyncApplyResult.NeedsReview.
+	// Carries the customize-layer conflict details (schema bump vs patch
+	// failed) so the UI can render the right help copy.
+	Conflict *CustomizeConflict `json:"conflict,omitempty"`
+}
+
+// CustomizeConflict mirrors customize.Conflict in API-facing form.
+// Defined here (sync.go is the JSON boundary) to keep the customize
+// package free of cross-package json-tag coupling and to avoid leaking
+// the internal type into every caller. Translation happens at the
+// integration point.
+type CustomizeConflict struct {
+	Reason   string `json:"reason"`
+	Kind     string `json:"kind"`
+	PatchErr string `json:"patch_err,omitempty"`
 }
 
 // ---- engine ----
@@ -241,6 +275,37 @@ type repoRule struct {
 // Rule files live at "<category>/<filename>.json" and are identified by
 // their top-level "name" field; anything else in the repo (LICENSE,
 // README, scripts/, docs/) is skipped automatically.
+// LoadRepoRuleByPath finds the upstream rule for a given subscription
+// + repo_path triple and returns its raw JSON bytes + maintainer-
+// assigned _slug. Wraps the existing listRepoRules pattern so the
+// customize handlers (which need to re-read upstream by RepoPath)
+// don't have to reproduce the category-vs-slug-vs-filename mapping.
+//
+// RepoPath in qui-sync is `<category>/<slug>` (no .json suffix). On
+// disk the file is `<category>/<RuleFilename(name)>.json` where the
+// filename is derived from the rule name, NOT from the slug. So a
+// naive filepath.Join(cloneDir, repoPath + ".json") only works when
+// rule name == slug (common but not guaranteed). listRepoRules walks
+// the category dirs and indexes by the canonical RepoPath; this
+// helper does the lookup.
+//
+// Returns notFound=true (no error) when the path doesn't match any
+// upstream rule in the current clone. err is non-nil only for disk-
+// read failures during the walk itself.
+func LoadRepoRuleByPath(cfg *Config, sub, repoPath string) (raw []byte, slug string, notFound bool, err error) {
+	cloneDir := SubscriptionCloneDir(cfg.Paths().Sources, sub)
+	rules, err := listRepoRules(cloneDir)
+	if err != nil {
+		return nil, "", false, err
+	}
+	for _, rr := range rules {
+		if rr.RepoPath == repoPath {
+			return rr.Raw, rr.Slug, false, nil
+		}
+	}
+	return nil, "", true, nil
+}
+
 func listRepoRules(cloneDir string) ([]repoRule, error) {
 	entries, err := os.ReadDir(cloneDir)
 	if err != nil {
@@ -373,6 +438,18 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 	}
 	usedLiveIDs := map[int]bool{}
 
+	// Pre-compute the set of rule slugs with a stored customization
+	// file. One directory walk (ListForSubscription) up front instead
+	// of N disk reads (one per rule) inside the loop. Cheap even for
+	// subscriptions with hundreds of rules; saves a perceptible
+	// Plan-render latency in the customization-heavy case.
+	customizationSlugs := map[string]bool{}
+	if refs, _ := customize.ListForSubscription(cfg.Paths().State, slug); len(refs) > 0 {
+		for _, ref := range refs {
+			customizationSlugs[ref.Slug] = true
+		}
+	}
+
 	for _, rr := range repoRules {
 		pr := SyncPlanRule{
 			RepoPath:      rr.RepoPath,
@@ -396,6 +473,17 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 			}
 			pr.FromState = true
 			pr.AutoSync = entry.AutoSync
+			pr.Customizing = entry.Customizing
+			// HasCustomization is read from the customize package so
+			// the UI gets a single source of truth for the file's
+			// existence (state's Customizing flag is the user's
+			// declared intent; the file is the actual stored diff).
+			// Backed by customizationSlugs (computed once at the top
+			// of the loop) — O(1) map lookup instead of N disk reads
+			// per Plan refresh (review C4).
+			if customizationSlugs[rr.Slug] {
+				pr.HasCustomization = true
+			}
 			if entry.SortOrderOverride != nil {
 				pr.SortOrder = *entry.SortOrderOverride
 				pr.SortOrderFrom = "override"
@@ -659,7 +747,70 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 			if entry != nil && len(entry.PreservedFields) > 0 {
 				preserve = entry.PreservedFields
 			}
-			payload, err := buildUpdatePayload(rr, liveRaw, preserve, d.SortOrderOverride)
+
+			// Layer 2 (customize) — if a personal customization exists
+			// for this rule, apply it to the upstream baseline BEFORE
+			// the consumer-field preservation pass that buildUpdatePayload
+			// performs. See dev/docs/personal-overrides-spec.md
+			// "Three-layer merge architecture" for the full ordering:
+			//   upstream → apply customize-diff → preserve auto-fields → PUT
+			// A conflict (schema bump, patch failed) routes the rule to
+			// NeedsReview instead of pushing a broken merge. An UNREADABLE
+			// stored customization (future format-version, corrupted file)
+			// is ALSO treated as needs-review (kind=version_unsupported)
+			// rather than Failed — the actionable remedy is the same
+			// (Re-capture / Drop), not "retry the sync" (review C7/C8).
+			//
+			// The per-(sub, slug) save lock is held around Load+Apply so a
+			// concurrent toggle-OFF (which deletes the file via
+			// customize.DeleteLocked) can't race between our Load and
+			// our Apply, producing an apply against a customization
+			// the user just deleted. Holding the lock for the read+
+			// compute window is the same pattern handleCaptureCustomization
+			// uses for compute+save (review B2).
+			out.QuiRuleID = d.QuiRuleID
+			upstreamForLayer3 := rr.Raw
+			cmu := customize.SaveLockFor(slug, rr.Slug)
+			cmu.Lock()
+			cust, err := customize.Load(cfg.Paths().State, slug, rr.Slug)
+			if err != nil {
+				cmu.Unlock()
+				out.Conflict = &CustomizeConflict{
+					Kind:   "version_unsupported",
+					Reason: err.Error(),
+				}
+				result.NeedsReview = append(result.NeedsReview, out)
+				continue
+			}
+			if cust != nil {
+				applied, err := customize.Apply(rr.Raw, cust)
+				if err != nil {
+					cmu.Unlock()
+					out.Error = "apply customization: " + err.Error()
+					result.Failed = append(result.Failed, out)
+					continue
+				}
+				if applied.Conflict != nil {
+					cmu.Unlock()
+					out.Conflict = &CustomizeConflict{
+						Reason:   applied.Conflict.Reason,
+						Kind:     string(applied.Conflict.Kind),
+						PatchErr: applied.Conflict.PatchErr,
+					}
+					result.NeedsReview = append(result.NeedsReview, out)
+					continue
+				}
+				upstreamForLayer3 = applied.Effective
+			}
+			cmu.Unlock()
+
+			// Pass the customize-merged upstream to Layer 3 so the
+			// preserve-fields pass uses our effective baseline, not the
+			// raw upstream. When no customization exists this is a no-op
+			// (upstreamForLayer3 == rr.Raw).
+			rrForLayer3 := rr
+			rrForLayer3.Raw = upstreamForLayer3
+			payload, err := buildUpdatePayload(rrForLayer3, liveRaw, preserve, d.SortOrderOverride)
 			if err != nil {
 				out.QuiRuleID = d.QuiRuleID
 				out.Error = err.Error()
