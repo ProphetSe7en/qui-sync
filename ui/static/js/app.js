@@ -1519,7 +1519,7 @@ function quiSyncApp() {
       slug: '',
       rule: null,
       loading: false,
-      result: null,         // { has_changes, diff, fragile_ops, schema_version, upstream_sha }
+      result: null,         // v2 shape: { has_changes, ops, op_count, upstream_fingerprint }
       notes: '',
       saving: false,
     },

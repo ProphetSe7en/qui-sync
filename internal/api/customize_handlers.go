@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/prophetse7en/qui-sync/internal/core"
 	"github.com/prophetse7en/qui-sync/internal/core/customize"
@@ -22,14 +23,21 @@ import (
 //   /diff         — fetch stored diff for the conflict UI
 
 // customizeDiffSummary is the JSON shape returned by setup-diff and
-// capture. has_changes drives the UI's "show modal" branch; diff +
-// fragile_ops let the caller render the human-readable summary.
+// capture in v0.6+ (Phase E.2 onward). has_changes drives the UI's
+// "show modal" branch. v2 swaps the raw JSON-Patch diff for a typed
+// op list — the UI can group them by kind (Added / Modified / Removed)
+// instead of rendering 12 positional replace-ops as a wall of JSON.
+//
+// upstream_fingerprint is the SHA-truncated content fingerprint of
+// the upstream rule at capture time. Same value gets stamped on the
+// stored CustomizationV2 — surfaced here so the UI can render
+// "captured against upstream <fp>" for forensics if a conflict
+// surfaces later.
 type customizeDiffSummary struct {
-	HasChanges  bool            `json:"has_changes"`
-	Diff        json.RawMessage `json:"diff,omitempty"`
-	FragileOps  []string        `json:"fragile_ops,omitempty"`
-	SchemaVer   string          `json:"schema_version,omitempty"`
-	UpstreamSHA string          `json:"upstream_sha,omitempty"`
+	HasChanges          bool           `json:"has_changes"`
+	Ops                 []customize.Op `json:"ops,omitempty"`
+	OpCount             int            `json:"op_count,omitempty"`
+	UpstreamFingerprint string         `json:"upstream_fingerprint,omitempty"`
 }
 
 // handleSetupDiff is called at subscription-mapping time, before the
@@ -94,7 +102,6 @@ func (s *Server) handleCaptureCustomization(w http.ResponseWriter, r *http.Reque
 		RepoPath      string `json:"repo_path"`
 		QuiInstanceID int    `json:"qui_instance_id"`
 		QuiRuleID     int    `json:"qui_rule_id"`
-		CapturedFrom  string `json:"captured_from"`
 		Notes         string `json:"notes,omitempty"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&req); err != nil {
@@ -107,13 +114,6 @@ func (s *Server) handleCaptureCustomization(w http.ResponseWriter, r *http.Reque
 	}
 	if len(req.Notes) > notesMaxLen {
 		writeErr(w, 400, fmt.Errorf("notes too long (max %d chars)", notesMaxLen))
-		return
-	}
-	cf := customize.CapturedFrom(req.CapturedFrom)
-	switch cf {
-	case customize.CapturedFromSetupTime, customize.CapturedFromPostSetup:
-	default:
-		writeErr(w, 400, fmt.Errorf("invalid captured_from %q (must be %q or %q)", req.CapturedFrom, customize.CapturedFromSetupTime, customize.CapturedFromPostSetup))
 		return
 	}
 
@@ -132,43 +132,48 @@ func (s *Server) handleCaptureCustomization(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Lock now covers compute + save. Even if a concurrent capture
-	// raced through loadUpstreamAndLive ahead of us, only one
-	// goroutine can be in this critical section at a time per (sub,
-	// slug) — so the live snapshot we Capture against is the same
-	// one we save against, and our save can't clobber a never-seen
-	// concurrent write.
-	mu := customize.SaveLockFor(req.Subscription, ruleSlug)
-	mu.Lock()
-	defer mu.Unlock()
-
-	cfg := s.getConfig()
-	c, err := customize.Capture(upstream, live, cf, req.Notes, customize.DefaultCaptureOptions())
-	if err == customize.ErrNoChanges {
-		// Idempotent zero-diff capture: caller said "save my changes"
-		// but there ARE no changes. Treat as success — return summary
-		// with has_changes=false and DON'T touch storage (don't
-		// silently delete an existing customization either, since the
-		// user might have meant to capture against a different live
-		// state and the no-changes is a glitch).
-		writeJSON(w, 200, customizeDiffSummary{HasChanges: false})
-		return
-	}
+	// Compute the diff via the v2 engine. DiffBridge returns nil ops
+	// when upstream and live are byte-equivalent — that's the v2
+	// equivalent of v0.5's ErrNoChanges. Idempotent: zero-diff means
+	// we return has_changes=false and DON'T touch storage.
+	ops, err := customize.DiffBridge(upstream, live)
 	if err != nil {
 		writeErr(w, 500, err)
 		return
 	}
-	// We already hold the per-key lock — call lock-free Save directly.
-	if err := customize.Save(cfg.Paths().State, req.Subscription, ruleSlug, c); err != nil {
+	if len(ops) == 0 {
+		writeJSON(w, 200, customizeDiffSummary{HasChanges: false})
+		return
+	}
+
+	// Compute upstream fingerprint for the persisted customization.
+	// Done outside the lock — Compute is a pure function of the
+	// upstream bytes we already have.
+	var upObj any
+	_ = json.Unmarshal(upstream, &upObj)
+	upFp := string(customize.Compute(upObj))
+
+	// SaveV2 takes its own lock internally (B5 fix) so the
+	// compute-then-save window is fully serialised on the
+	// (sub, slug) key. Nothing else to do here.
+	cfg := s.getConfig()
+	c := &customize.CustomizationV2{
+		SchemaVersion:       customize.CurrentSchemaVersion,
+		RuleSchemaVersion:   "1", // Qui rule schema today; future drift can stamp other values
+		CapturedAt:          time.Now().UTC().Format(time.RFC3339),
+		UpstreamFingerprint: upFp,
+		Notes:               req.Notes,
+		Ops:                 ops,
+	}
+	if err := customize.SaveV2(cfg.Paths().State, req.Subscription, ruleSlug, c); err != nil {
 		writeErr(w, 500, fmt.Errorf("save customization: %w", err))
 		return
 	}
 	writeJSON(w, 200, customizeDiffSummary{
-		HasChanges:  true,
-		Diff:        c.Diff,
-		FragileOps:  c.FragileOps,
-		SchemaVer:   c.SchemaVersionAssumed,
-		UpstreamSHA: c.BaseSHA,
+		HasChanges:          true,
+		Ops:                 ops,
+		OpCount:             len(ops),
+		UpstreamFingerprint: upFp,
 	})
 }
 
@@ -231,7 +236,7 @@ func (s *Server) handleSetRuleCustomizing(w http.ResponseWriter, r *http.Request
 			// Don't fail the toggle; log via response.
 			log.Printf("customize toggle: skipping cascade for %s/%s — upstream slug not resolvable", sub, req.RepoPath)
 		} else {
-			if err := customize.DeleteLocked(cfg.Paths().State, sub, ruleSlug); err != nil {
+			if err := customize.DeleteV2(cfg.Paths().State, sub, ruleSlug); err != nil {
 				if errors.Is(err, customize.ErrInvalidIdentifier) {
 					// Slug from upstream is malformed (shouldn't
 					// happen if Slugify produced it, but defense-in-
@@ -292,7 +297,7 @@ func (s *Server) handleResetCustomization(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cfg := s.getConfig()
-	if err := customize.DeleteLocked(cfg.Paths().State, sub, slug); err != nil {
+	if err := customize.DeleteV2(cfg.Paths().State, sub, slug); err != nil {
 		if errors.Is(err, customize.ErrInvalidIdentifier) {
 			writeErr(w, 400, err)
 			return
@@ -314,16 +319,25 @@ func (s *Server) handleGetCustomizationDiff(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	cfg := s.getConfig()
-	c, err := customize.Load(cfg.Paths().State, sub, slug)
+	c, err := customize.LoadV2(cfg.Paths().State, sub, slug)
 	if err != nil {
 		// Differentiate user-input bugs (invalid identifier) from
-		// data-integrity issues (corrupt or future-format file) so
-		// the UI can surface the right copy. Both still block the
-		// regular Load-and-render path, but the version-mismatch
-		// case should route to the conflict UI's "Re-capture or
-		// Drop" affordance (per review C7/C8).
+		// data-integrity issues (v0.5 holdover that Phase F hasn't
+		// archived yet, corrupt file, etc.). Both still block the
+		// regular load-and-render path, but the unsupported-version
+		// case should route to the conflict UI's "Recreate or Drop"
+		// affordance (which Phase E.3 will wire to a richer banner).
 		if errors.Is(err, customize.ErrInvalidIdentifier) {
 			writeErr(w, 400, err)
+			return
+		}
+		if errors.Is(err, customize.ErrUnsupportedV2Version) {
+			writeJSON(w, 200, map[string]any{
+				"unreadable":           true,
+				"needs_recreate":       true,
+				"unsupported_version":  true,
+				"error_message":        err.Error(),
+			})
 			return
 		}
 		writeJSON(w, 200, map[string]any{
@@ -398,24 +412,28 @@ func (s *Server) loadUpstreamAndLive(r *http.Request, sub, repoPath string, inst
 	return upstream, live, ruleSlug, nil
 }
 
-// computeDiffSummary runs Capture with default options on a pristine
+// computeDiffSummary runs SemanticDiff via DiffBridge on a pristine
 // upstream/live pair (no persistence) and returns the JSON-API shape
-// the UI consumes. ErrNoChanges becomes has_changes=false; any other
+// the UI consumes. Empty op list becomes has_changes=false; any other
 // error bubbles up.
 func computeDiffSummary(upstream, live []byte) (*customizeDiffSummary, error) {
-	c, err := customize.Capture(upstream, live, customize.CapturedFromSetupTime, "", customize.DefaultCaptureOptions())
-	if err == customize.ErrNoChanges {
-		return &customizeDiffSummary{HasChanges: false}, nil
-	}
+	ops, err := customize.DiffBridge(upstream, live)
 	if err != nil {
 		return nil, err
 	}
+	if len(ops) == 0 {
+		return &customizeDiffSummary{HasChanges: false}, nil
+	}
+	// Compute upstream fingerprint for forensics — UI can show
+	// "captured against upstream <fp>" + conflict-time diff against
+	// upstream-now.
+	var upObj any
+	_ = json.Unmarshal(upstream, &upObj)
 	return &customizeDiffSummary{
-		HasChanges:  true,
-		Diff:        c.Diff,
-		FragileOps:  c.FragileOps,
-		SchemaVer:   c.SchemaVersionAssumed,
-		UpstreamSHA: c.BaseSHA,
+		HasChanges:          true,
+		Ops:                 ops,
+		OpCount:             len(ops),
+		UpstreamFingerprint: string(customize.Compute(upObj)),
 	}, nil
 }
 

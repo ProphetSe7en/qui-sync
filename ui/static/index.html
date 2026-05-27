@@ -2032,29 +2032,23 @@
       <template x-if="!captureModal.loading && captureModal.result && captureModal.result.has_changes">
         <div>
           <p style="margin-bottom:10px">
-            Found <b x-text="(captureModal.result.diff ? captureModal.result.diff.length : 0) + ' change(s)'"></b>
+            Found <b x-text="(captureModal.result.op_count || 0) + ' change(s)'"></b>
             in your Qui rule that aren't in upstream. Save them as a personal customization, and qui-sync will keep them applied on every upstream pull.
           </p>
 
-          <!-- Diff preview — raw JSON Patch for now. Phase 1.4 polish
-               will humanise these into "+ Added condition: TAGS NOT_EQUAL ..."
-               descriptions. For v1 the path + value is enough for users
-               to recognise their own changes.
-               NOTE: captureModal.result.diff is ALREADY a parsed JS array
-               (Go's json.RawMessage round-trips through fetch as a nested
-               JSON value, not a string). Do not JSON.parse it — that
-               throws and Alpine swallows the error, leaving the preview
-               blank. -->
-          <div style="background:var(--panel-bg, #161b22); border:1px solid var(--border); border-radius:4px; padding:10px; font-family:var(--font-mono); font-size:var(--font-xs); max-height:240px; overflow:auto; white-space:pre">
-            <span x-text="captureModal.result.diff ? JSON.stringify(captureModal.result.diff, null, 2) : ''"></span>
-          </div>
+          <!-- v2 op-list preview. Phase E.3 will humanise these into
+               "+ Added condition: TAGS NOT_EQUAL upload" descriptions
+               grouped by kind. For E.2 / smoke-test the raw op JSON is
+               enough — users can see the path + value + kind and
+               recognise their own changes.
 
-          <template x-if="captureModal.result.fragile_ops && captureModal.result.fragile_ops.length > 0">
-            <div style="margin-top:10px; padding:8px 10px; background:rgba(217, 119, 6, 0.12); border-left:3px solid var(--text-warn, #d97706); border-radius:2px; font-size:var(--font-sm)">
-              <b>⚠ Position-sensitive changes</b><br>
-              <span x-text="captureModal.result.fragile_ops.length + ' of your changes target specific positions in the rule. If upstream later reorders, these may need to be re-captured. Append-style edits (the most common case) are robust and not flagged here.'"></span>
-            </div>
-          </template>
+               Position-sensitive warning from v0.5 (fragile_ops) is
+               gone: v2's fingerprint matching makes position-shifts
+               survive maintainer reorders automatically — no warning
+               needed. -->
+          <div style="background:var(--panel-bg, #161b22); border:1px solid var(--border); border-radius:4px; padding:10px; font-family:var(--font-mono); font-size:var(--font-xs); max-height:240px; overflow:auto; white-space:pre">
+            <span x-text="captureModal.result.ops ? JSON.stringify(captureModal.result.ops, null, 2) : ''"></span>
+          </div>
 
           <div style="margin-top:14px">
             <label style="display:block; font-size:var(--font-sm); margin-bottom:4px">

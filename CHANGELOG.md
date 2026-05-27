@@ -1,5 +1,54 @@
 # Changelog
 
+## v0.6.0-dev
+
+Customize now survives upstream reorganisations cleanly.
+
+### Changed — Customize subscribed rules
+
+Previously, adding a condition near the top of a rule's conditions list
+could revert maintainer changes elsewhere in the same list on the next
+sync. That happened because each captured edit was tied to its index
+position, so anything that shifted indices read as "user changed all of
+this." Inserting at the end was the workaround.
+
+The new engine matches edits by the content of each condition, not by
+its position. You can add, modify, or remove conditions anywhere — at
+the top, in the middle, at the end — and only your specific change is
+captured. Maintainer updates to unrelated conditions still apply on
+every sync.
+
+A few other improvements that fall out of the rewrite:
+
+- **Smaller customize files.** A single inserted condition is now one
+  entry, not a dozen position-replacements.
+- **Cleaner Detect-changes view.** The change-list shows the actual
+  things you changed (added condition, modified value, removed
+  condition) instead of raw position-by-position diffs. The visual
+  presentation is intentionally minimal in this release — a richer
+  human-readable summary lands in the next update.
+- **Better conflict messages.** If you and the maintainer both edited
+  the same field between syncs, you get a "both sides changed this"
+  notice with the two values shown — instead of your edit silently
+  winning.
+- **Stricter same-field detection.** A change to (for example) a
+  `GREATER_THAN` condition no longer accidentally matches a sibling
+  `LESS_THAN` condition on the same field.
+
+### Migration — re-create existing customizations
+
+Customizations saved before this release are in the previous format,
+which the new engine cannot read. They stay on disk untouched, but they
+will not be applied during sync until you re-create them in the new
+format.
+
+**To migrate:** open each customized rule, click **Detect changes** on
+the Customize toggle, review the change list, and click Save. The new
+format takes over from there.
+
+A one-click migration with a startup banner is planned for the next
+release; for now the manual click-through is the safe path.
+
 ## v0.5.0-dev
 
 ### New — Customize subscribed rules

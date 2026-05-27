@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,27 @@ import (
 
 	"github.com/prophetse7en/qui-sync/internal/core/customize"
 )
+
+// firstBlockingConflict returns the first medium-or-high severity
+// conflict from the apply pipeline, or nil if all conflicts (if any)
+// are low/info severity. Low conflicts (anchor_gone with fallback,
+// target_gone on Remove that's already absent) shouldn't block sync —
+// apply still produced a usable effective tree. Medium+ conflicts
+// (target_gone on Replace/Descend, value_drifted, type_changed,
+// path_gone) require user review before we PUT to Qui.
+//
+// Phase E.2: this is the v2 equivalent of the v0.5 "applied.Conflict
+// is non-nil" check, which was binary. v2 has graded severity so we
+// surface only the operator-blocking ones to NeedsReview.
+func firstBlockingConflict(cs []customize.OpConflict) *customize.OpConflict {
+	for i := range cs {
+		s := cs[i].Severity
+		if s == customize.SeverityMedium || s == customize.SeverityHigh {
+			return &cs[i]
+		}
+	}
+	return nil
+}
 
 // ---- Plan types (server → client) ----
 
@@ -439,14 +461,17 @@ func PlanSync(ctx context.Context, cfg *Config, client *QuiClient, state *Consum
 	usedLiveIDs := map[int]bool{}
 
 	// Pre-compute the set of rule slugs with a stored customization
-	// file. One directory walk (ListForSubscription) up front instead
-	// of N disk reads (one per rule) inside the loop. Cheap even for
-	// subscriptions with hundreds of rules; saves a perceptible
-	// Plan-render latency in the customization-heavy case.
+	// file. One directory walk (ListV2ForSubscription) up front
+	// instead of N disk reads (one per rule) inside the loop. Cheap
+	// even for subscriptions with hundreds of rules; saves a
+	// perceptible Plan-render latency in the customization-heavy
+	// case. v2 listing skips any v0.5 holdovers silently — those
+	// files are reported as "not customized" until Phase F migration
+	// archives them on next boot.
 	customizationSlugs := map[string]bool{}
-	if refs, _ := customize.ListForSubscription(cfg.Paths().State, slug); len(refs) > 0 {
-		for _, ref := range refs {
-			customizationSlugs[ref.Slug] = true
+	if slugs, _ := customize.ListV2ForSubscription(cfg.Paths().State, slug); len(slugs) > 0 {
+		for _, s := range slugs {
+			customizationSlugs[s] = true
 		}
 	}
 
@@ -772,35 +797,55 @@ func ApplySync(ctx context.Context, cfg *Config, client *QuiClient, state *Consu
 			upstreamForLayer3 := rr.Raw
 			cmu := customize.SaveLockFor(slug, rr.Slug)
 			cmu.Lock()
-			cust, err := customize.Load(cfg.Paths().State, slug, rr.Slug)
+			cust, err := customize.LoadV2(cfg.Paths().State, slug, rr.Slug)
 			if err != nil {
 				cmu.Unlock()
-				out.Conflict = &CustomizeConflict{
-					Kind:   "version_unsupported",
-					Reason: err.Error(),
+				// ErrUnsupportedV2Version surfaces when the on-disk
+				// file is in the v0.5 format (Phase F migration hasn't
+				// run yet, or the file was sideloaded). Treat as
+				// "not customized" so sync proceeds — Phase F's
+				// MaybeMigrate will archive the file on next boot and
+				// the UI will surface a "needs recreate" banner.
+				// Any OTHER load error is structural and gets the
+				// version_unsupported channel.
+				if errors.Is(err, customize.ErrUnsupportedV2Version) {
+					// fall through with cust == nil; do NOT mark
+					// NeedsReview — the rule is just not-customized
+					// from sync's perspective today.
+				} else {
+					out.Conflict = &CustomizeConflict{
+						Kind:   "version_unsupported",
+						Reason: err.Error(),
+					}
+					result.NeedsReview = append(result.NeedsReview, out)
+					continue
 				}
-				result.NeedsReview = append(result.NeedsReview, out)
-				continue
 			}
 			if cust != nil {
-				applied, err := customize.Apply(rr.Raw, cust)
+				applied, conflicts, err := customize.ApplyBridge(rr.Raw, cust)
 				if err != nil {
 					cmu.Unlock()
 					out.Error = "apply customization: " + err.Error()
 					result.Failed = append(result.Failed, out)
 					continue
 				}
-				if applied.Conflict != nil {
+				// First medium-or-high severity conflict blocks sync
+				// for this rule — UI gets routed to the conflict modal.
+				// Low/info conflicts (e.g. anchor_gone with end-fallback,
+				// target_gone on a Remove that's already absent,
+				// ambiguous_target) are not blocking — the apply still
+				// produced a usable effective tree.
+				if c := firstBlockingConflict(conflicts); c != nil {
 					cmu.Unlock()
 					out.Conflict = &CustomizeConflict{
-						Reason:   applied.Conflict.Reason,
-						Kind:     string(applied.Conflict.Kind),
-						PatchErr: applied.Conflict.PatchErr,
+						Reason:   c.Message,
+						Kind:     string(c.Reason),
+						PatchErr: "", // v2 conflicts don't have a separate underlying-lib message
 					}
 					result.NeedsReview = append(result.NeedsReview, out)
 					continue
 				}
-				upstreamForLayer3 = applied.Effective
+				upstreamForLayer3 = applied
 			}
 			cmu.Unlock()
 
