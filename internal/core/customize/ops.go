@@ -105,9 +105,25 @@ type MatchSpec struct {
 	// Partial lets us look up the drifted leaf precisely instead of
 	// the previous probe-by-Field-existence heuristic, which
 	// false-matched across operators. Set only on Replace ops that
-	// target array-element leaves; absent ("") for Remove/Descend
+	// target array-element leaves; absent ("") for Remove
 	// (those rely on full Fingerprint alone).
 	Partial Fingerprint `json:"partial,omitempty"`
+
+	// Skeleton is the structure-only fingerprint (Skeleton(node)) of the
+	// upstream group at capture. Set on Descend ops so apply can relocate
+	// the group when the maintainer edited a VALUE inside it (which shifts
+	// the full Fingerprint but not the skeleton). Apply tries Fingerprint
+	// first, then Skeleton, then reports target_gone. Absent ("") on
+	// Remove/Replace and on Descend ops captured before this field existed.
+	Skeleton Fingerprint `json:"skeleton,omitempty"`
+
+	// Children is the sorted list of immediate child full-fingerprints of
+	// the captured upstream group. Set on Descend ops alongside Skeleton.
+	// When the full Fingerprint misses and several same-skeleton siblings
+	// exist, apply descends into the sibling sharing the most children
+	// with this list — so a value-edited group beats a structurally
+	// identical look-alike, and a true tie blocks instead of guessing.
+	Children []Fingerprint `json:"children,omitempty"`
 }
 
 // CustomizationV2 is the on-disk form of a (sub, slug) rule's user

@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.6.1-dev
+
+### Fixed: customize now handles grouped conditions
+
+Rules that wrap their conditions in groups (an OR with several AND
+branches, the usual shape for delete rules) are now customised
+correctly. Adding, editing, or removing a single condition inside a
+group is captured as just that one change. Maintainer updates to the
+other conditions in the same group, such as a changed torrent-age
+threshold, now come through on sync instead of being held back by your
+saved copy.
+
+If you customised a grouped rule on the previous build, open it, run
+Detect changes once, and Save to re-capture it in the new form.
+
 ## v0.6.0-dev
 
 Customize now survives upstream reorganisations cleanly.

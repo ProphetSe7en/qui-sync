@@ -65,6 +65,50 @@ func Partial(node any) Fingerprint {
 	return hash16(payload)
 }
 
+// Skeleton returns a STRUCTURE-ONLY fingerprint that ignores every leaf
+// `value` but preserves field+operator+negate and the full group nesting.
+// Two nodes share a Skeleton iff they describe the same SHAPE of test,
+// regardless of the concrete thresholds inside.
+//
+//	Leaf:  hash(field, operator, negate)             — value omitted
+//	Group: hash(operator, sorted(child skeletons))   — recurses
+//
+// Apply uses this to relocate a group whose FULL fingerprint shifted only
+// because the maintainer edited a value inside it (e.g. a torrent-age
+// threshold). The skeleton is stable across such value-edits, so the
+// user's descend op still finds its target and the maintainer's new value
+// is preserved. Hashes carry an "S:" namespace so a skeleton can never
+// collide with a full (Compute) or leaf-partial (Partial) fingerprint.
+//
+// Returns "" for nil / unrecognised nodes, same contract as Compute.
+func Skeleton(node any) Fingerprint {
+	m, ok := node.(map[string]any)
+	if !ok || m == nil {
+		return ""
+	}
+	if isLeaf(m) {
+		field, _ := m["field"].(string)
+		op, _ := m["operator"].(string)
+		negate := boolField(m, "negate")
+		return hash16(fmt.Sprintf("S:leaf|field=%s|op=%s|negate=%t", field, op, negate))
+	}
+	if isGroup(m) {
+		op, _ := m["operator"].(string)
+		conds, _ := m["conditions"].([]any)
+		childSks := make([]string, 0, len(conds))
+		for _, c := range conds {
+			sk := Skeleton(c)
+			if sk == "" {
+				sk = "?"
+			}
+			childSks = append(childSks, string(sk))
+		}
+		sort.Strings(childSks)
+		return hash16(fmt.Sprintf("S:group|op=%s|children=%s", op, strings.Join(childSks, ",")))
+	}
+	return ""
+}
+
 // isLeaf reports whether a JSON-decoded condition node is a leaf
 // (has a "field" key) rather than a group (has a "conditions" key).
 //

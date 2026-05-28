@@ -13,6 +13,7 @@ package customize
 
 import (
 	"reflect"
+	"sort"
 )
 
 // SemanticDiff walks two JSON-decoded values (upstream + live) and
@@ -177,7 +178,30 @@ func diffArray(upArr, lvArr []any, path []string, out *[]Op) {
 		*out = append(*out, Op{
 			Kind:   OpDescend,
 			Path:   path,
-			Match:  &MatchSpec{Fingerprint: Compute(up)},
+			Match:  &MatchSpec{Fingerprint: Compute(up), Skeleton: Skeleton(up), Children: childFingerprints(up)},
+			SubOps: subOut,
+		})
+	}
+
+	// Group pairs (Pass 2.5): groups whose interior changed — paired by
+	// child-fingerprint overlap, not full fp. Recurse and emit a Descend
+	// carrying both the full fp (exact apply-time match when the group is
+	// untouched upstream) and the skeleton (structure-only fallback when
+	// the maintainer edited a value inside it). Without this, an edited
+	// nested group would be a wholesale remove+add that swallows every
+	// maintainer change in the block.
+	for _, p := range r.GroupPairs {
+		up := upArr[p.UpIdx]
+		lv := lvArr[p.LvIdx]
+		var subOut []Op
+		diffNode(up, lv, nil, &subOut)
+		if len(subOut) == 0 {
+			continue
+		}
+		*out = append(*out, Op{
+			Kind:   OpDescend,
+			Path:   path,
+			Match:  &MatchSpec{Fingerprint: Compute(up), Skeleton: Skeleton(up), Children: childFingerprints(up)},
 			SubOps: subOut,
 		})
 	}
@@ -270,6 +294,27 @@ func derivePosition(lvArr []any, lvIdx int, _ MatchResult) *Position {
 		Anchor:      Compute(lvArr[lvIdx-1]),
 		FallbackEnd: true,
 	}
+}
+
+// childFingerprints returns the sorted immediate child full-fingerprints
+// of a group node. Stored on Descend ops so apply can disambiguate
+// same-skeleton siblings by content overlap. Empty/unknown children are
+// dropped (they can't participate in a deterministic match), mirroring
+// bucketBy's contract.
+func childFingerprints(group any) []Fingerprint {
+	m, ok := group.(map[string]any)
+	if !ok {
+		return nil
+	}
+	conds, _ := m["conditions"].([]any)
+	out := make([]Fingerprint, 0, len(conds))
+	for _, c := range conds {
+		if fp := Compute(c); fp != "" {
+			out = append(out, fp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 // keyUnion returns the deterministic union of two maps' keys. Order

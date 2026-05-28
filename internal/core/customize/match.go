@@ -36,11 +36,19 @@ type Pair struct {
 //                  pass. Capture emits OpAdd with a Position derived from
 //                  surrounding matched elements.
 //
-// RemovedFromLive: upstreamArr indices with no live counterpart in either
+// GroupPairs:      structural matches between GROUPS whose interior
+//                  changed (so their full fingerprints differ). Paired by
+//                  best child-fingerprint overlap, not by index. Capture
+//                  emits OpDescend and recurses; without this pass an
+//                  edited nested group would surface as a wholesale
+//                  remove+add and swallow every maintainer edit inside it.
+//
+// RemovedFromLive: upstreamArr indices with no live counterpart in any
 //                  pass. Capture emits OpRemove.
 type MatchResult struct {
 	IdentityPairs   []Pair
 	ModifyPairs     []Pair
+	GroupPairs      []Pair
 	AddedInLive     []int
 	RemovedFromLive []int
 }
@@ -76,16 +84,37 @@ func matchArrays(upstreamArr, liveArr []any) MatchResult {
 	pairedUp2 := indexSet(modifyPairs, true)
 	pairedLv2 := indexSet(modifyPairs, false)
 
-	// ---- Final classification ----
-	var removed []int
+	// ---- Pass 2.5: structural group pairing ----
+	// A group whose interior changed has a different full fingerprint
+	// (Pass 1 misses) and is not a leaf (Pass 2 skips it). Pair such
+	// groups by how many child fingerprints they still share, so capture
+	// can recurse into them instead of treating the whole group as
+	// replaced. Operates only on what's still unmatched after Passes 1-2.
+	var upStillUn, lvStillUn []int
 	for _, i := range upUnmatched {
 		if !pairedUp2[i] {
+			upStillUn = append(upStillUn, i)
+		}
+	}
+	for _, i := range lvUnmatched {
+		if !pairedLv2[i] {
+			lvStillUn = append(lvStillUn, i)
+		}
+	}
+	groupPairs := pairGroupsByOverlap(upstreamArr, liveArr, upStillUn, lvStillUn)
+	pairedUp3 := indexSet(groupPairs, true)
+	pairedLv3 := indexSet(groupPairs, false)
+
+	// ---- Final classification ----
+	var removed []int
+	for _, i := range upStillUn {
+		if !pairedUp3[i] {
 			removed = append(removed, i)
 		}
 	}
 	var added []int
-	for _, i := range lvUnmatched {
-		if !pairedLv2[i] {
+	for _, i := range lvStillUn {
+		if !pairedLv3[i] {
 			added = append(added, i)
 		}
 	}
@@ -93,9 +122,109 @@ func matchArrays(upstreamArr, liveArr []any) MatchResult {
 	return MatchResult{
 		IdentityPairs:   identityPairs,
 		ModifyPairs:     modifyPairs,
+		GroupPairs:      groupPairs,
 		AddedInLive:     added,
 		RemovedFromLive: removed,
 	}
+}
+
+// pairGroupsByOverlap pairs still-unmatched GROUPS across the two arrays
+// by child-fingerprint overlap. Two groups are candidates only if they
+// share the same `operator` AND at least one child full-fingerprint.
+// Among candidates, greedy highest-overlap-first wins, each index used
+// once. Deterministic: ties break by (upIdx, lvIdx), result sorted by UpIdx.
+//
+// Overlap (not skeleton-equality) is the right capture-time signal because
+// the user may have added/removed/edited children — the groups are "the
+// same group, edited," and they keep most of their children in common.
+func pairGroupsByOverlap(upArr, lvArr []any, upIdxs, lvIdxs []int) []Pair {
+	type groupInfo struct {
+		op       string
+		children map[Fingerprint]int
+	}
+	collect := func(arr []any, idxs []int) map[int]groupInfo {
+		out := map[int]groupInfo{}
+		for _, i := range idxs {
+			m, ok := arr[i].(map[string]any)
+			if !ok || !isGroup(m) {
+				continue
+			}
+			op, _ := m["operator"].(string)
+			out[i] = groupInfo{op: op, children: childFingerprintCounts(m)}
+		}
+		return out
+	}
+	upInfo := collect(upArr, upIdxs)
+	lvInfo := collect(lvArr, lvIdxs)
+
+	type cand struct {
+		up, lv, score int
+	}
+	var cands []cand
+	for ui, ug := range upInfo {
+		for li, lg := range lvInfo {
+			if ug.op != lg.op {
+				continue
+			}
+			if s := overlapScore(ug.children, lg.children); s > 0 {
+				cands = append(cands, cand{up: ui, lv: li, score: s})
+			}
+		}
+	}
+	sort.Slice(cands, func(a, b int) bool {
+		if cands[a].score != cands[b].score {
+			return cands[a].score > cands[b].score
+		}
+		if cands[a].up != cands[b].up {
+			return cands[a].up < cands[b].up
+		}
+		return cands[a].lv < cands[b].lv
+	})
+
+	usedUp := map[int]bool{}
+	usedLv := map[int]bool{}
+	var pairs []Pair
+	for _, c := range cands {
+		if usedUp[c.up] || usedLv[c.lv] {
+			continue
+		}
+		usedUp[c.up] = true
+		usedLv[c.lv] = true
+		pairs = append(pairs, Pair{UpIdx: c.up, LvIdx: c.lv})
+	}
+	sort.Slice(pairs, func(i, j int) bool { return pairs[i].UpIdx < pairs[j].UpIdx })
+	return pairs
+}
+
+// childFingerprintCounts returns a multiset of the full fingerprints of a
+// group's immediate children. Used to score group-to-group overlap.
+func childFingerprintCounts(group map[string]any) map[Fingerprint]int {
+	out := map[Fingerprint]int{}
+	conds, _ := group["conditions"].([]any)
+	for _, c := range conds {
+		fp := Compute(c)
+		if fp == "" {
+			continue
+		}
+		out[fp]++
+	}
+	return out
+}
+
+// overlapScore is the size of the multiset intersection of two child-fp
+// maps: sum over shared fingerprints of min(countA, countB).
+func overlapScore(a, b map[Fingerprint]int) int {
+	score := 0
+	for fp, na := range a {
+		if nb, ok := b[fp]; ok {
+			if nb < na {
+				score += nb
+			} else {
+				score += na
+			}
+		}
+	}
+	return score
 }
 
 // findByFingerprint scans an array for elements whose full fingerprint
@@ -118,6 +247,65 @@ func findByFingerprint(arr []any, fp Fingerprint) (firstIdx, count int) {
 		}
 	}
 	return firstIdx, count
+}
+
+// chooseDescendTarget selects the array index to descend into when an
+// OpDescend's exact full-fingerprint missed (the maintainer changed
+// something inside, or removed, the captured group). It scans for
+// elements sharing the captured group's structure-only Skeleton, then
+// among those picks the one sharing the most immediate children (full
+// fingerprints) with the captured group:
+//
+//	"none"      — no structural twin survives; caller emits target_gone.
+//	"unique"    — a single best-overlap twin; idx is it, descend there.
+//	"ambiguous" — two+ twins tie on best overlap; caller blocks rather
+//	              than guess which one the user actually customised.
+//
+// A value-edited copy of the original group keeps most of its children
+// (only the edited leaves' fingerprints shift), so it wins decisively
+// over a look-alike that merely shares the same shape. A lone structural
+// twin (count 1) is descended into as the best available target even at
+// zero overlap — that covers wrapper groups whose only child is itself a
+// deeply value-edited subgroup.
+func chooseDescendTarget(arr []any, sk Fingerprint, captured []Fingerprint) (int, string) {
+	if sk == "" {
+		return -1, "none"
+	}
+	capCounts := fpCounts(captured)
+	bestIdx, bestScore := -1, -1
+	tie := false
+	for i, e := range arr {
+		if Skeleton(e) != sk {
+			continue
+		}
+		m, _ := e.(map[string]any)
+		score := overlapScore(capCounts, childFingerprintCounts(m))
+		switch {
+		case score > bestScore:
+			bestIdx, bestScore, tie = i, score, false
+		case score == bestScore:
+			tie = true
+		}
+	}
+	if bestIdx == -1 {
+		return -1, "none"
+	}
+	if tie {
+		return -1, "ambiguous"
+	}
+	return bestIdx, "unique"
+}
+
+// fpCounts turns a fingerprint slice into a multiset (count per fp) for
+// overlapScore.
+func fpCounts(fps []Fingerprint) map[Fingerprint]int {
+	out := map[Fingerprint]int{}
+	for _, fp := range fps {
+		if fp != "" {
+			out[fp]++
+		}
+	}
+	return out
 }
 
 // findByPartialFingerprint scans an array for the first leaf whose

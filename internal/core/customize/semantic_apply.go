@@ -221,14 +221,32 @@ func applyArrayOp(root any, op *Op, conflicts *[]OpConflict) {
 
 	case OpDescend:
 		idx, n := findByFingerprint(arr, op.Match.Fingerprint)
-		if n == 0 {
-			emit(conflicts, op, ConflictTargetGone, SeverityMedium,
-				fmt.Sprintf("Group with fingerprint %s removed by maintainer; cannot descend", op.Match.Fingerprint), nil)
-			return
-		}
 		if n > 1 {
+			// Exact-fp duplicates are byte-identical groups, so descending
+			// into either is equivalent — info only.
 			emit(conflicts, op, ConflictAmbiguous, SeverityInfo,
 				fmt.Sprintf("%d duplicates of group fingerprint %s; descending into first", n, op.Match.Fingerprint), nil)
+		}
+		if n == 0 {
+			// Full fp missed: the maintainer changed something inside, or
+			// removed, the captured group. Relocate by structure-only
+			// skeleton, disambiguating same-skeleton siblings by how many
+			// children they still share with the group we captured. A
+			// value-edited copy keeps most children and wins; a true tie
+			// blocks rather than risk applying our edit to the wrong group.
+			target, decision := chooseDescendTarget(arr, op.Match.Skeleton, op.Match.Children)
+			switch decision {
+			case "none":
+				emit(conflicts, op, ConflictTargetGone, SeverityMedium,
+					fmt.Sprintf("Group with fingerprint %s removed by maintainer; cannot descend", op.Match.Fingerprint), nil)
+				return
+			case "ambiguous":
+				emit(conflicts, op, ConflictAmbiguous, SeverityMedium,
+					fmt.Sprintf("Several groups share structure %s and the exact one you customised is gone; cannot safely pick which to update",
+						op.Match.Skeleton), nil)
+				return
+			}
+			idx = target
 		}
 		// Apply sub-ops with arr[idx] as the new root. Sub-paths are
 		// relative to the matched group (per design Q6).
