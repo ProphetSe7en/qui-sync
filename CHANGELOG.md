@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.2-dev
+
+### Added
+
+- **A tip on the Detect changes screen.** When you capture a customization, a short note now reminds you that it saves everything currently different from the repo. If something should stay in sync with the repo instead, sync first, change only what you want to keep, then detect again.
+
 ## v0.6.1-dev
 
 ### Fixed: customize now handles grouped conditions
