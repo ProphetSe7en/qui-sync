@@ -1,4 +1,4 @@
-# qui-sync — How-To Guide
+# qui-sync: How-To Guide
 
 Detailed walkthrough of every feature. For a quick overview, see [README.md](../README.md).
 
@@ -7,8 +7,8 @@ Detailed walkthrough of every feature. For a quick overview, see [README.md](../
 ## Table of Contents
 
 1. [First-Time Setup](#first-time-setup)
-2. [Export — Sharing Your Automations](#export)
-3. [Sync — Importing Someone Else's Automations](#sync)
+2. [Export: Sharing Your Automations](#export)
+3. [Sync: Importing Someone Else's Automations](#sync)
 4. [Backup & Restore](#backup--restore)
 5. [Common Scenarios](#common-scenarios)
 
@@ -34,14 +34,14 @@ docker run -d --name qui-sync \
 
 Go to `http://<your-server-ip>:6070` in your browser.
 
-You'll see a yellow "Setup needed" banner in Settings. That's expected — you haven't connected to Qui yet.
+You'll see a yellow "Setup needed" banner in Settings. That's expected, because you haven't connected to Qui yet.
 
 ### 3. Connect to Qui
 
 1. Go to the **Settings** tab.
 2. Under **Qui connection**, enter:
    - **URL:** Your Qui server URL (e.g. `http://192.168.1.100:7476`). No trailing slash.
-   - **API key:** Your **full API key** from Qui → Settings → API Keys. **Not** a Client Proxy key — those have limited permissions and will fail when qui-sync tries to create or update rules.
+   - **API key:** Your **full API key** from Qui → Settings → API Keys. **Not** a Client Proxy key. Those have limited permissions and will fail when qui-sync tries to create or update rules.
 3. Click **Save**.
 
 ### 4. Add your Qui instances
@@ -75,15 +75,15 @@ When you export a rule, qui-sync transforms it for sharing:
 | `conditions` | Kept as-is | The actual rule logic |
 | `sortOrder` | Kept (or overridden) | Maintainer sets the execution order |
 | `intervalSeconds` | Kept as-is | How often Qui checks the rule |
-| `trackerPattern` | Replaced with `"tracker_1"` | Your tracker list is personal — consumers fill in their own |
+| `trackerPattern` | Replaced with `"tracker_1"` | Your tracker list is personal; subscribers fill in their own |
 | `trackerDomains` | Replaced with `["tracker.xyz"]` | Same reason |
-| `enabled` | Stripped | Consumer decides what to enable |
-| `dryRun` | Stripped | Consumer decides |
-| `notify` | Stripped | Consumer decides |
-| `freeSpaceSource` | Stripped | Consumer decides |
+| `enabled` | Stripped | Subscriber decides what to enable |
+| `dryRun` | Stripped | Subscriber decides |
+| `notify` | Stripped | Subscriber decides |
+| `freeSpaceSource` | Stripped | Subscriber decides |
 | `id`, `instanceId`, `createdAt`, `updatedAt` | Stripped | Server-internal |
 
-**Exception:** Rules with `trackerPattern: "*"` (all trackers) keep the wildcard — it's not personal data.
+**Exception:** Rules with `trackerPattern: "*"` (all trackers) keep the wildcard, because it's not personal data.
 
 ### Step-by-step: your first export
 
@@ -93,36 +93,36 @@ When you export a rule, qui-sync transforms it for sharing:
    - Each rule has a checkbox. **Uncheck** any rules you don't want to share (private, experimental, etc.).
    - Excluded rules are never exported. The exclusion is remembered.
 4. **Set priorities:**
-   - The **Priority** column shows the execution order. Edit it to control the order consumers receive your rules in.
+   - The **Priority** column shows the execution order. Edit it to control the order subscribers receive your rules in.
    - If you change a priority, a ↺ reset button appears to revert to Qui's value.
 5. **Rename the folder** (optional):
    - Click the blue `→ movies` badge to rename the repo folder for this instance. The folder is renamed on disk too.
 6. Click **Preview** to see what would change:
-   - `+ Added` — new rules not yet in the repo
-   - `~ Updated (conditions, sortOrder)` — changed rules, with which fields differ
-   - `R Renamed` — rules whose name changed in Qui
-   - `⌫ Archived` — rules deleted from Qui. These move to `/data/repo/archive/<folder>/<Rule Name>.json` instead of being removed — history stays visible on GitHub. Consumers syncing from your repo never apply archived rules.
-7. (optional) Fill in **Note for this export** — a short explanation of *why* the rules changed. The note becomes the top paragraph of today's entry in `CHANGELOG.md`, above the auto-generated rule list. One note per export; cleared automatically on success. The note lives in the UI field only — nothing is saved to disk until you click Commit export.
+   - `+ Added`: new rules not yet in the repo
+   - `~ Updated (conditions, sortOrder)`: changed rules, with which fields differ
+   - `R Renamed`: rules whose name changed in Qui
+   - `⌫ Archived`: rules deleted from Qui. These move to `/data/repo/archive/<folder>/<Rule Name>.json` instead of being removed, so history stays visible on GitHub. Subscribers syncing from your repo never apply archived rules.
+7. (optional) Fill in **Note for this export**, a short explanation of *why* the rules changed. The note becomes the top paragraph of today's entry in `CHANGELOG.md`, above the auto-generated rule list. One note per export; cleared automatically on success. The note lives in the UI field only; nothing is saved to disk until you click Commit export.
 8. Click **Commit export** to write the changes:
-   - Files are written to `/data/repo/<folder>/<Rule Name>.json` — the same layout used by community-maintained qui automation repos, so your repo is compatible with anyone else using qui-sync
+   - Files are written to `/data/repo/<folder>/<Rule Name>.json`, the same layout used by community-maintained qui automation repos, so your repo is compatible with anyone else using qui-sync
    - A git commit is made automatically
    - Old versions are backed up to `/data/backups/`
    - CHANGELOG.md is updated, with your note at the top of today's entry if you provided one
-   - Running Commit export again the same day REPLACES today's entry instead of stacking a second one — so the latest diff + latest note always wins
-9. (optional) **Fix a typo in your note** — after export, click **Edit note** below the diff. Rewrites today's note paragraph and creates a follow-up git commit (`qui-sync: update export note`) without re-running the export. Push when ready.
+   - Running Commit export again the same day REPLACES today's entry instead of stacking a second one, so the latest diff and latest note always win
+9. (optional) **Fix a typo in your note.** After export, click **Edit note** below the diff. Rewrites today's note paragraph and creates a follow-up git commit (`qui-sync: update export note`) without re-running the export. Push when ready.
 
 ### Pushing to GitHub
 
 After committing, the **Share-repo** panel shows your repo's sync status:
 
-- **"In sync with remote"** — nothing to push
-- **"2 commits ahead"** — you have changes ready to push
+- **"In sync with remote"**: nothing to push
+- **"2 commits ahead"**: you have changes ready to push
 
 Below the status you'll find **Review changes before push**. This lists every rule that differs from the remote, grouped as:
 
-- **Added** — new rules you are about to publish
-- **Modified** — existing rules whose settings changed. Click a row to see exactly which fields differ (`sortOrder: 3 → 5`, `tags (added): [cross-seed]`).
-- **Removed** — rules that exist on the remote but not locally. Pushing deletes them from the remote.
+- **Added**: new rules you are about to publish
+- **Modified**: existing rules whose settings changed. Click a row to see exactly which fields differ (`sortOrder: 3 → 5`, `tags (added): [cross-seed]`).
+- **Removed**: rules that exist on the remote but not locally. Pushing deletes them from the remote.
 
 Click **Push to remote** when the list matches what you intend. Requires a push token configured in Settings.
 
@@ -130,9 +130,9 @@ Click **Push to remote** when the list matches what you intend. Requires a push 
 
 In Settings, after pasting and saving your PAT, click **Validate stored token**. qui-sync asks GitHub who the token belongs to and shows the result inline:
 
-- **"● Valid — \<your-username\>"** — token works, push will succeed
-- **"● GitHub rejected the token (401)"** — token is wrong, expired, or mistyped. Regenerate and paste again.
-- **"● GitHub denied the request (403)"** — token is real but does not have write access to the target repo. Check that the fine-grained PAT has Contents: Read and Write scoped to the correct repository.
+- **"● Token valid (\<your-username\>)"**: push will succeed
+- **"● GitHub rejected the token (401)"**: token is wrong, expired, or mistyped. Regenerate and paste again.
+- **"● GitHub denied the request (403)"**: token is real but does not have write access to the target repo. Check that the fine-grained PAT has Contents: Read and Write scoped to the correct repository.
 
 ### Pulling from GitHub (accepting PRs)
 
@@ -149,9 +149,9 @@ If you are pointing qui-sync at a repo that already has rule files on GitHub (yo
 
 Click **Reset local to remote** on the Share-repo panel. This fetches the remote branch and replaces `/data/repo` with an exact copy, discarding the empty local init. After the reset:
 
-1. Re-run Export — your Qui rules are written on top of the remote content.
-2. Review changes — you now see only real differences between your Qui and the remote.
-3. Push — sends just your changes, no history conflict.
+1. Re-run Export: your Qui rules are written on top of the remote content.
+2. Review changes: you now see only real differences between your Qui and the remote.
+3. Push: sends just your changes, no history conflict.
 
 The button is destructive (it throws away any local commits that are not on the remote), but on a first-time setup there are no meaningful local commits to lose.
 
@@ -169,15 +169,15 @@ Sync lets you import automations from someone else's shared repo into your own Q
 
 When you update an existing rule via Sync, qui-sync does NOT blindly overwrite it. Instead:
 
-1. **Layer 1 — Repo rule:** The shared automation's logic (conditions, tags, limits, name)
-2. **Layer 2 — Your live Qui rule:** Your personal settings are preserved:
+1. **Layer 1 (Repo rule):** The shared automation's logic (conditions, tags, limits, name)
+2. **Layer 2 (Your live Qui rule):** Your personal settings are preserved:
    - `trackerPattern` (your tracker list)
    - `trackerDomains` (your tracker domains)
    - `intervalSeconds` (your check interval)
    - `freeSpaceSource` (your free space setting)
    - `enabled` (whether you have it turned on)
    - `dryRun` and `notify`
-3. **Layer 3 — Your overrides:** Sort order and any per-rule settings from the Plan view
+3. **Layer 3 (Your overrides):** Sort order and any per-rule settings from the Plan view
 
 **Result:** You get the maintainer's latest rule logic, but your personal setup is never touched.
 
@@ -204,16 +204,16 @@ When you update an existing rule via Sync, qui-sync does NOT blindly overwrite i
 5. The plan table shows every rule in the repo:
    - **Category filter:** Click `movies` / `tv` / `misc` to filter. Only filtered rules are applied.
    - **Action per rule:**
-     - `CREATE` (green) — new rule will be created in Qui, disabled by default
-     - `UPDATE ⚠` (amber) — existing Qui rule will be updated (logic only, your trackers preserved)
-     - `SKIP` (gray) — rule ignored
+     - `CREATE` (green): new rule will be created in Qui, disabled by default
+     - `UPDATE ⚠` (amber): existing Qui rule will be updated (logic only, your trackers preserved)
+     - `SKIP` (gray): rule ignored
    - **Link dropdown:** For each rule, choose "Create new" or link to an existing Qui rule. qui-sync auto-suggests matches by name.
    - **Priority:** Edit the number to control execution order.
    - **Select all / Deselect all:** Bulk-toggle for the filtered rules.
 6. Click **Apply selected** to execute:
    - Review the confirmation modal (shows create/update/skip counts)
    - Click Apply
-   - New rules appear in Qui as disabled — go to Qui UI to review and enable them
+   - New rules appear in Qui as disabled, so go to Qui UI to review and enable them
    - Updated rules have new logic but your trackers are untouched
 
 ### Auto-sync
@@ -242,7 +242,7 @@ This lets you test the full Sync flow (Pull → Plan → Apply) without pushing 
 
 ## Backup & Restore
 
-Full 1:1 snapshots of every automation in a Qui instance, including trackers, enabled state, and intervals — no stripping, no placeholders.
+Full 1:1 snapshots of every automation in a Qui instance, including trackers, enabled state, and intervals. No stripping, no placeholders.
 
 ### Manual backup
 
@@ -252,10 +252,10 @@ Backup tab → click **Backup now** on an instance row. qui-sync writes a timest
 
 Settings tab → **Backup** panel:
 
-- **Schedule** — how often the background worker snapshots every configured instance. Choose off / 6h / 12h / 24h / 3d / 7d. Default is off.
-- **Retention days** — snapshots older than this are pruned after the next run. 0 = never expire by age.
-- **Keep last N** — minimum number of snapshots kept per instance regardless of age. 0 = no minimum.
-- **Gitignored** — keeps backups out of any git commits in the share-repo.
+- **Schedule**: how often the background worker snapshots every configured instance. Choose off / 6h / 12h / 24h / 3d / 7d. Default is off.
+- **Retention days**: snapshots older than this are pruned after the next run. 0 = never expire by age.
+- **Keep last N**: minimum number of snapshots kept per instance regardless of age. 0 = no minimum.
+- **Gitignored**: keeps backups out of any git commits in the share-repo.
 
 When both retention rules are set, they combine: a snapshot is pruned only when it is older than Retention days AND outside the Keep-last-N floor. This protects the most recent N from age-based eviction even if they're all ancient.
 
@@ -287,7 +287,7 @@ Pick any backup from the Backup tab and restore it into the same or a different 
 2. URL: the repo URL they shared with you.
 3. Auth: Public repo (or SSH/token if private).
 4. Pull → Plan → filter to the category you want → Apply.
-5. All rules created disabled — review in Qui, set your trackers, enable.
+5. All rules created disabled. Review in Qui, set your trackers, enable.
 
 ### "I want to use the same automations on two Qui instances"
 

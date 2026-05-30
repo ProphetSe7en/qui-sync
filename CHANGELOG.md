@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.3-dev
+
+### Changed
+
+- **Tooltips, help text, and descriptions reworked for clarity.** Many of the in-app hints, the Subscribe and Publish how-it-works panels, and the README and how-to docs read more cleanly now. Repeated label-and-dash patterns were varied with periods, colons, and shorter sentences. A few doc strings that quoted UI text now match what the UI actually shows (the token-validation status was the most visible drift).
+
 ## v0.6.2-dev
 
 ### Added

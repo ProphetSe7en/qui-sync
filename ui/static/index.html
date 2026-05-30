@@ -43,13 +43,13 @@
     </template>
     <template x-if="!authStatus.authenticated && authStatus.configured">
       <span style="background:#1a2f45;color:#58a6ff;padding:3px 8px;border-radius:10px;font-size:var(--font-xs);font-weight:500;letter-spacing:0.3px;border:1px solid #1f3b5a;margin-left:12px"
-            title="Local network — authentication bypassed for this network">Local</span>
+            title="Local network: authentication bypassed for this network">Local</span>
     </template>
   </div>
 </nav>
 
 <div class="dev-banner" x-show="!hideDevBanner">
-  <span>⚠️ <b>Early development</b> — this app is for testing only. Features may be incomplete or change without notice.</span>
+  <span>⚠️ <b>Early development.</b> This app is for testing only. Features may be incomplete or change without notice.</span>
   <button class="dev-banner-close" @click="hideDevBanner = true; localStorage.setItem('qui.hideDevBanner', 'true')">✕</button>
 </div>
 
@@ -64,12 +64,16 @@
       <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
         <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
           <b>How it works:</b>
-          <b>1.</b> Set the GitHub repository where your rules will live (top panel).
-          <b>2.</b> Add the Qui instances you want to share rules from. Expand any to fine-tune which rules get included.
-          <b>3.</b> Click <b>Preview</b> to see what would change, then <b>Commit export</b> to write files + auto-commit.
-          <b>4.</b> Use <b>Push to GitHub</b> to publish.
           <br><br>
-          <b>Safe for sharing:</b> Your personal tracker lists are automatically replaced with placeholders. Rules using <code>*</code> (all trackers) keep the wildcard. Fields like <code>enabled</code>, <code>dryRun</code>, and <code>notify</code> are stripped — consumers set those themselves.
+          <b>1. Set the repository.</b> Pick the GitHub repository where your rules will live (top panel).
+          <br>
+          <b>2. Add your Qui instances.</b> Pick the instances you want to share rules from. Expand any to fine-tune which rules get included.
+          <br>
+          <b>3. Preview and commit.</b> Click <b>Preview</b> to see what would change, then <b>Commit export</b> to write the files and auto-commit.
+          <br>
+          <b>4. Push.</b> Click <b>Push to GitHub</b> to publish.
+          <br><br>
+          <b>Safe for sharing:</b> Your personal tracker lists are automatically replaced with placeholders. Rules using <code>*</code> (all trackers) keep the wildcard. Fields like <code>enabled</code>, <code>dryRun</code>, and <code>notify</code> are stripped, so subscribers set those themselves.
         </div>
         <button class="btn btn-sm" @click="dismissExportHelp()" title="Hide this help">✕</button>
       </div>
@@ -147,7 +151,7 @@
           <div class="form-grid">
             <label>Display name</label>
             <input class="input" x-model="repoDisplayNameDraft"
-                   placeholder="Friendly label (optional — derived from URL otherwise)"
+                   placeholder="Friendly label (optional, derived from URL)"
                    autocomplete="off" spellcheck="false">
 
             <label>Repository URL</label>
@@ -208,7 +212,7 @@
                 <template x-if="editingCategory !== i.qui_instance_id">
                   <span class="badge badge-blue category-badge"
                         @click="startEditCategory(i)"
-                        title="Click to rename — becomes the folder under rules/ in the share-repo">
+                        title="Click to rename. Becomes the folder under rules/ in the share-repo.">
                     → <span x-text="i.category"></span>  <span class="dim">✎</span>
                   </span>
                 </template>
@@ -250,7 +254,7 @@
                         x-text="i.excluded ? 'Include instance' : 'Exclude instance'"></button>
                 <button class="btn btn-sm btn-danger" style="margin-left:6px"
                         @click.stop="removeInstance(i)"
-                        title="Remove this instance from the published list. On-disk files and exclusion state are kept — re-adding resumes where you left off.">Remove</button>
+                        title="Remove this instance from the published list. On-disk files and exclusion state are kept, so re-adding resumes where you left off.">Remove</button>
               </span>
             </div>
 
@@ -624,7 +628,7 @@
             <div style="display:flex; gap:8px; align-items:center">
               <button class="btn" @click="pullRepo()"
                       :disabled="!repoStatus.push_configured || repoStatus.status.behind === 0 || pullingRepo"
-                      title="Fetch new commits from remote and merge them into local. Safe — keeps your local commits intact. Use for day-to-day sync (e.g. after merging a PR). Fails if local and remote have diverged — use 'Reset local to remote' for that case.">
+                      title="Fetch new commits from remote and merge them into local. Safe: keeps your local commits intact. Use for day-to-day sync (e.g. after merging a PR). Fails if local and remote have diverged. Use 'Reset local to remote' for that case.">
                 Pull from remote
               </button>
               <button class="btn btn-primary" @click="pushRepo()"
@@ -639,7 +643,7 @@
               </button>
               <button class="btn btn-danger" @click="resetLocalToRemote()"
                       :disabled="!repoStatus.status.remote_url || resettingRepo"
-                      title="Replace /data/repo with an exact copy of the remote branch. Destructive — discards local commits not on the remote. Use when Pull refuses with 'unrelated histories' or 'non-fast-forward', or to forcibly restart from the remote state. Your Qui instance is not touched.">
+                      title="Replace /data/repo with an exact copy of the remote branch. Destructive: discards local commits not on the remote. Use when Pull refuses with 'unrelated histories' or 'non-fast-forward', or to forcibly restart from the remote state. Your Qui instance is not touched.">
                 <span x-show="!resettingRepo">Reset local to remote</span>
                 <span x-show="resettingRepo">Resetting…</span>
               </button>
@@ -853,7 +857,7 @@
     <div class="panel" style="border-color:var(--accent-amber)"
          x-show="config && config.qui && !config.qui.api_key_present">
       <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber); display:flex; align-items:center; gap:12px; flex-wrap:wrap">
-        <div style="flex:1; min-width:200px"><b>Setup needed</b> — connect to Qui first. Backups won't run until Qui is reachable.</div>
+        <div style="flex:1; min-width:200px"><b>Setup needed.</b> Connect to Qui first. Backups won't run until Qui is reachable.</div>
         <button class="btn btn-sm" @click="setTab('settings')">Open Settings</button>
       </div>
     </div>
@@ -863,9 +867,9 @@
         <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
           Backups protect your Qui automations so you can recover if something goes wrong.
           <br><br>
-          <b>Schedules</b> — set up once, run on their own. Give it a name, choose which instances to back up, and how often (every day at 03:00, twice a week, every 6 hours, etc.). Each fire makes a complete snapshot.
+          <b>Schedules.</b> Set up once, run on their own. Give it a name, choose which instances to back up, and how often (every day at 03:00, twice a week, every 6 hours, etc.). Each fire makes a complete snapshot.
           <br>
-          <b>Manual backup</b> — snapshot one instance right now. Useful before a risky change.
+          <b>Manual backup.</b> Snapshot one instance right now. Useful before a risky change.
           <br><br>
           <b>Restore</b> works the same way in both cases: open <b>History</b> on a schedule, or expand an instance under <b>Manual backup</b>, then click <b>Restore</b> on the snapshot you want. Pick which Qui instance it lands in (originally backed up from, or a different one to migrate).
         </div>
@@ -1195,7 +1199,7 @@
     <div class="panel" style="border-color:var(--accent-amber)"
          x-show="config && config.qui && !config.qui.api_key_present">
       <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber)">
-        <b>Setup needed</b> — enter your Qui URL and API key below to get started. Publish and Subscribe won't work until Qui is connected.
+        <b>Setup needed.</b> Enter your Qui URL and API key below to get started. Publish and Subscribe won't work until Qui is connected.
       </div>
     </div>
 
@@ -1235,10 +1239,10 @@
             <input class="input" x-model="quiDraft.browserUrl" placeholder="Leave blank to use URL above" style="width:100%"
                    autocomplete="off" data-1p-ignore data-lpignore="true" spellcheck="false">
             <div class="dim" style="font-size:var(--font-xs); margin-top:4px">
-              The address <b>your browser</b> uses to reach Qui's web UI — used by the "Open in Qui ↗"
-              deep-link in the Customize flow. Set this when URL above is a Docker container name or
-              an internal hostname that your browser can't resolve. Example: <code>http://192.168.0.10:7476</code>
-              or <code>https://qui.yourdomain.com</code>. Leave blank if URL is browser-reachable.
+              The address <b>your browser</b> uses to reach Qui's web UI. Used by the "Open in Qui ↗"
+              deep-link in the Customize flow. Set this when the URL above is a Docker container name or
+              an internal hostname your browser can't resolve. Example: <code>http://192.168.0.10:7476</code>
+              or <code>https://qui.yourdomain.com</code>. Leave blank if the URL is browser-reachable.
             </div>
           </div>
           <label>API key</label>
@@ -1338,7 +1342,7 @@
     <div class="panel" style="border-color:var(--accent-amber)"
          x-show="config && config.qui && !config.qui.api_key_present">
       <div class="panel-body" style="padding:12px 16px; background:var(--accent-amber-bg); color:var(--accent-amber); display:flex; align-items:center; gap:12px; flex-wrap:wrap">
-        <div style="flex:1; min-width:200px"><b>Setup needed</b> — connect to Qui first. Subscribed rules can't be applied until Qui is reachable.</div>
+        <div style="flex:1; min-width:200px"><b>Setup needed.</b> Connect to Qui first. Subscribed rules can't be applied until Qui is reachable.</div>
         <button class="btn btn-sm" @click="setTab('settings')">Open Settings</button>
       </div>
     </div>
@@ -1346,25 +1350,25 @@
     <div class="panel help-panel" x-show="!hideSyncHelp">
       <div class="panel-body" style="padding:12px 16px; display:flex; align-items:start; gap:12px">
         <div style="flex:1; font-size:var(--font-sm); color:var(--text-secondary); line-height:1.6">
-          Subscribe to someone else's automation collection so you can use their setup without copying each rule by hand.
+          Subscribe to someone else's automation collection to use their setup without copying each rule by hand.
           <br><br>
-          <b>1. Add subscription</b> — paste the repository URL, click <b>Look up what's in this repo</b>, then pick which folder (movies / tv / etc.) and which of your Qui instances should receive those rules. The instance choice is remembered so Plan + Apply use it automatically without asking again.
+          <b>1. Add subscription.</b> Paste the repository URL, click <b>Look up what's in this repo</b>, then pick which folder (movies, tv, etc.) and which of your Qui instances should receive those rules. The instance choice is remembered, so Plan and Apply use it automatically.
           <br>
-          <b>2. Pull</b> — fetches the latest rules from the repository. Click whenever you want to check for updates.
+          <b>2. Pull.</b> Fetches the latest rules from the repository. Click it whenever you want to check for updates.
           <br>
-          <b>3. Plan</b> — shows what will happen for each rule (Create new, Update existing, or Skip). Two shortcuts speed this up:
+          <b>3. Plan.</b> Shows what will happen for each rule: Create new, Update existing, or Skip. Two shortcuts speed this up:
           <br>
-          &nbsp;&nbsp;• <b>Match by name</b> — auto-links every repo rule to your existing Qui rule with the same name (case-insensitive). Use this when you've already got rules with matching names in Qui.
+          &nbsp;&nbsp;• <b>Match by name</b> auto-links each repo rule to your existing Qui rule with the same name (case-insensitive). Use it when you already have rules with matching names in Qui.
           <br>
-          &nbsp;&nbsp;• <b>Create new for all</b> — flips every rule to "create as new" if you'd rather start clean and reorganise after.
+          &nbsp;&nbsp;• <b>Create new for all</b> marks every rule as a new rule, so you can start clean and reorganise later.
           <br>
-          You can override any individual decision in the table before applying.
+          You can override any decision in the table before applying.
           <br>
-          <b>4. Apply</b> — runs the planned changes. Your trackers, enabled state, and intervals stay yours — only the rule logic changes.
+          <b>4. Apply.</b> Runs the planned changes. Your trackers, enabled state, and intervals stay yours. Only the rule logic changes.
           <br>
-          <b>5. Auto (optional)</b> — tick the Auto checkbox on rules you want to track automatically. qui-sync will apply future repo updates to those rules in the background.
+          <b>5. Auto (optional).</b> Tick the Auto checkbox on the rules you want to track automatically. qui-sync applies future repo updates to those rules in the background.
           <br><br>
-          New rules are always created <b>paused</b>. Enable them in Qui when you've checked the logic.
+          New rules start <b>paused</b>. Enable them in Qui once you've checked the logic.
         </div>
         <button class="btn btn-sm" @click="dismissSyncHelp()" title="Hide this help">✕</button>
       </div>
@@ -1521,7 +1525,7 @@
                                 </template>
                                 <template x-if="rule.customizing && quiAutomationsURL(planBySub[sub.slug].qui_instance_id)">
                                   <a class="btn btn-sm" :href="quiAutomationsURL(planBySub[sub.slug].qui_instance_id)" target="_blank" rel="noopener noreferrer"
-                                     title="Open Qui's automations page in a new tab — edit this rule there, then come back and click Detect changes.">Open in Qui ↗</a>
+                                     title="Open Qui's automations page in a new tab, edit this rule there, then come back and click Detect changes.">Open in Qui ↗</a>
                                 </template>
                                 <template x-if="needsReviewFor(sub.slug, rule)">
                                   <button class="btn btn-sm" @click="openConflictModal(sub.slug, rule)"
@@ -2138,9 +2142,9 @@
           <div style="margin-top:16px; padding:10px 12px; background:rgba(88, 166, 255, 0.08); border-left:3px solid var(--accent-blue, #58a6ff); border-radius:2px; font-size:var(--font-sm)">
             <b>How to resolve:</b>
             <ul style="margin:6px 0 0 0; padding-left:20px; line-height:1.6">
-              <li><b>Re-capture</b> — open the rule in Qui, adjust your edits to match the new upstream shape, then click Detect changes to save a new customization against current upstream.</li>
-              <li><b>Drop</b> — delete this customization. Next sync will apply clean upstream. Your Qui rule keeps its current state until then.</li>
-              <li><b>Close</b> — leave the conflict in place. Sync will skip this rule until you Re-capture or Drop.</li>
+              <li><b>Re-capture.</b> Open the rule in Qui, adjust your edits to match the new upstream shape, then click Detect changes to save a new customization against current upstream.</li>
+              <li><b>Drop.</b> Delete this customization. Next sync will apply clean upstream. Your Qui rule keeps its current state until then.</li>
+              <li><b>Close.</b> Leave the conflict in place. Sync will skip this rule until you Re-capture or Drop.</li>
             </ul>
           </div>
         </div>
