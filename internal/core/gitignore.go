@@ -107,6 +107,7 @@ func EnsureBackupGitignore(cfg *Config) error {
 		return err
 	}
 	tmp := giPath + ".tmp"
+	// #nosec G703 -- giPath is <repo_dir>/.gitignore, built from the operator's configured repository directory, with no request input in it.
 	if err := os.WriteFile(tmp, updated, 0o644); err != nil {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
@@ -165,6 +166,7 @@ func EnsureArchiveGitignore(cfg *Config) error {
 		return err
 	}
 	tmp := giPath + ".tmp"
+	// #nosec G703 -- giPath is <repo_dir>/.gitignore, built from the operator's configured repository directory, with no request input in it.
 	if err := os.WriteFile(tmp, updated, 0o644); err != nil {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}

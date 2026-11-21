@@ -410,6 +410,7 @@ func (s *Server) handleUpdateSubscription(w http.ResponseWriter, r *http.Request
 	}
 
 	if existing.URL != req.URL {
+		// #nosec G703 -- slug is checked against subSlugRegex when the subscription is created, and this handler already returned 404 unless the slug names a stored subscription.
 		_ = os.RemoveAll(core.SubscriptionCloneDir(cfg.Paths().Sources, slug))
 	}
 
@@ -438,6 +439,7 @@ func (s *Server) handleRemoveSubscription(w http.ResponseWriter, r *http.Request
 	}
 	// Best-effort cleanup of clone + auth files. Failures here don't
 	// block the removal — user can rm manually if needed.
+	// #nosec G703 -- RemoveSubscription above returned false unless the slug names a stored subscription, and stored slugs passed subSlugRegex at creation.
 	_ = os.RemoveAll(core.SubscriptionCloneDir(cfg.Paths().Sources, slug))
 	_ = os.RemoveAll(s.gitKeyDir(slug))
 

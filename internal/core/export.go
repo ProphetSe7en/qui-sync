@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -28,9 +30,24 @@ type DiffEntry struct {
 	OldName       string // for Renamed entries
 	OldCategory   string // for Moved entries
 	QuiID         int
-	InstanceID    int      `json:"instance_id"`               // Qui instance this rule belongs to
-	ChangedFields []string `json:"changed_fields,omitempty"`  // for Updated: which top-level JSON keys differ
-	Comment       string   `json:"comment,omitempty"`         // optional per-change rationale from the user
+	InstanceID    int      `json:"instance_id"`              // Qui instance this rule belongs to
+	ChangedFields []string `json:"changed_fields,omitempty"` // for Updated: which top-level JSON keys differ
+	Comment       string   `json:"comment,omitempty"`        // optional per-change rationale from the user
+	// FieldChanges carries the same differences as ChangedFields with the
+	// values attached, so a preview can say "sortOrder 3 to 5" instead of
+	// only naming the field. Values are present for short, simple fields;
+	// a nested block like conditions is named without them.
+	FieldChanges []FieldChange `json:"field_changes,omitempty"`
+}
+
+// FieldChange is one differing top-level key of a rule file. Field keeps
+// the ChangedFields naming, so a leading "+" means the key is new and "-"
+// means it is gone. Old and New are display strings and are empty when
+// the value is absent or too large to show inline.
+type FieldChange struct {
+	Field string `json:"field"`
+	Old   string `json:"old,omitempty"`
+	New   string `json:"new,omitempty"`
 }
 
 // Empty returns true if nothing changed.
@@ -292,6 +309,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 						InstanceID:    inst.QuiInstanceID,
 						Comment:       ruleComment,
 						ChangedFields: computeChangedFields(existing, fileJSON),
+						FieldChanges:  computeFieldChanges(existing, fileJSON),
 					})
 				}
 			} else if !exists && oldPath == "" {
@@ -699,6 +717,7 @@ func backupFile(src, backupsDir string) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G703 -- dst is <backups_dir>/<file>, where the file name came through RuleFilename, which strips path separators.
 	return os.WriteFile(dst, data, 0o644)
 }
 
@@ -793,6 +812,21 @@ func CleanBackups(backupsDir string, retentionDays int) (int, error) {
 // computeChangedFields returns which top-level JSON keys differ between
 // two rule files. Used to give the user context on what changed.
 func computeChangedFields(oldJSON, newJSON []byte) []string {
+	changes := computeFieldChanges(oldJSON, newJSON)
+	if len(changes) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(changes))
+	for _, c := range changes {
+		out = append(out, c.Field)
+	}
+	return out
+}
+
+// computeFieldChanges returns the differing top-level keys with their
+// values rendered for display. Ordering is alphabetical by field so a
+// preview reads the same way twice.
+func computeFieldChanges(oldJSON, newJSON []byte) []FieldChange {
 	var oldMap, newMap map[string]any
 	if json.Unmarshal(oldJSON, &oldMap) != nil || json.Unmarshal(newJSON, &newMap) != nil {
 		return nil
@@ -805,23 +839,74 @@ func computeChangedFields(oldJSON, newJSON []byte) []string {
 	for k := range newMap {
 		allKeys[k] = true
 	}
-	var changed []string
+	var changed []FieldChange
 	for k := range allKeys {
 		if k == "_slug" || k == "_description" {
 			continue // internal fields, not interesting to user
 		}
 		oldVal, oldOk := oldMap[k]
 		newVal, newOk := newMap[k]
-		if !oldOk && newOk {
-			changed = append(changed, "+"+k)
-		} else if oldOk && !newOk {
-			changed = append(changed, "-"+k)
-		} else if !deepEqualJSON(oldVal, newVal) {
-			changed = append(changed, k)
+		switch {
+		case !oldOk && newOk:
+			changed = append(changed, FieldChange{Field: "+" + k, New: displayValue(newVal)})
+		case oldOk && !newOk:
+			changed = append(changed, FieldChange{Field: "-" + k, Old: displayValue(oldVal)})
+		case !deepEqualJSON(oldVal, newVal):
+			changed = append(changed, FieldChange{Field: k, Old: displayValue(oldVal), New: displayValue(newVal)})
 		}
 	}
-	sort.Strings(changed)
+	sort.Slice(changed, func(i, j int) bool { return changed[i].Field < changed[j].Field })
 	return changed
+}
+
+// displayValueMaxLen keeps a preview line readable. Anything longer is
+// shown as the field name alone rather than a wall of JSON.
+const displayValueMaxLen = 40
+
+// displayValue renders a JSON value for a one-line preview, or returns
+// an empty string when it has no short form. Nested objects and long
+// lists deliberately have none: naming the field is honest, inventing a
+// summary of a condition tree is not.
+func displayValue(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return "none"
+	case bool:
+		return strconv.FormatBool(t)
+	case float64:
+		if t == math.Trunc(t) && math.Abs(t) < 1e15 {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'g', -1, 64)
+	case string:
+		if t == "" {
+			return "empty"
+		}
+		if len(t) > displayValueMaxLen {
+			return ""
+		}
+		return t
+	case []any:
+		parts := make([]string, 0, len(t))
+		total := 0
+		for _, item := range t {
+			s, ok := item.(string)
+			if !ok {
+				return ""
+			}
+			total += len(s) + 2
+			if total > displayValueMaxLen {
+				return ""
+			}
+			parts = append(parts, s)
+		}
+		if len(parts) == 0 {
+			return "empty"
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return ""
+	}
 }
 
 func sortDiffSlices(d *ExportDiff) {

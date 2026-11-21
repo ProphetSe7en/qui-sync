@@ -63,6 +63,7 @@ func AppendChangelog(repoDir string, diff *ExportDiff, when time.Time, note stri
 		section = mergeSameDaySections(existingTop, section)
 		rest = remainder
 	}
+	// #nosec G703 -- path is <repo_dir>/CHANGELOG.md, from the operator's configured repository directory.
 	return os.WriteFile(path, []byte(header+section+rest), 0o644)
 }
 
@@ -85,6 +86,7 @@ func UpdateLatestExportNote(repoDir, note string) error {
 	}
 	top, tail := sliceFirstSection(rest)
 	updated := replaceNoteInSection(top, strings.TrimSpace(note))
+	// #nosec G703 -- path is <repo_dir>/CHANGELOG.md, from the operator's configured repository directory.
 	return os.WriteFile(path, []byte(header+updated+tail), 0o644)
 }
 

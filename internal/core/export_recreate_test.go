@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -365,6 +366,91 @@ func TestExportStaleIncludeListDoesNotArchiveLiveRule(t *testing.T) {
 	}
 	if len(diff.Removed) != 0 {
 		t.Errorf("Removed = %+v, want none: the file is untouched", diff.Removed)
+	}
+}
+
+// TestExportFieldChangesCarryValues checks the preview can say what a
+// field was and what it became, which is the whole point of showing a
+// change at all. A nested block gets its name only: naming it is
+// honest, summarising a condition tree in one line is not.
+func TestExportFieldChangesCarryValues(t *testing.T) {
+	repo := t.TempDir()
+	qui := newQuiStub(t)
+
+	cfg := &Config{
+		Mode:            "maintainer",
+		RepoDir:         filepath.Join(repo, "repo"),
+		ExportInstances: []ExportInstance{{QuiInstanceID: 1, Category: "series"}},
+	}
+	client := NewQuiClient(qui.srv.URL, "test-key")
+
+	qui.body = `[{"id":10,"instanceId":1,"name":"Tag: Season Pack Exists","enabled":true,"sortOrder":3,
+		"intervalSeconds":300,"conditions":{"schemaVersion":"1","tag":{"enabled":true,"mode":"full"}}}]`
+	if _, err := RunExport(context.Background(), cfg, client, ExportOptions{}); err != nil {
+		t.Fatalf("first export: %v", err)
+	}
+
+	qui.body = `[{"id":10,"instanceId":1,"name":"Tag: Season Pack Exists","enabled":true,"sortOrder":5,
+		"intervalSeconds":600,"conditions":{"schemaVersion":"1","tag":{"enabled":true,"mode":"partial"}}}]`
+	diff, err := RunExport(context.Background(), cfg, client, ExportOptions{DryRun: true})
+	if err != nil {
+		t.Fatalf("second export: %v", err)
+	}
+	if len(diff.Updated) != 1 {
+		t.Fatalf("Updated = %+v, want one entry", diff.Updated)
+	}
+
+	got := map[string]FieldChange{}
+	for _, c := range diff.Updated[0].FieldChanges {
+		got[c.Field] = c
+	}
+	if c := got["sortOrder"]; c.Old != "3" || c.New != "5" {
+		t.Errorf("sortOrder change = %+v, want 3 to 5", c)
+	}
+	if c := got["intervalSeconds"]; c.Old != "300" || c.New != "600" {
+		t.Errorf("intervalSeconds change = %+v, want 300 to 600", c)
+	}
+	c, ok := got["conditions"]
+	if !ok {
+		t.Fatalf("conditions should be listed as changed, got %+v", diff.Updated[0].FieldChanges)
+	}
+	if c.Old != "" || c.New != "" {
+		t.Errorf("conditions should be named without values, got %+v", c)
+	}
+
+	// The plain field-name list stays in step with the detailed one.
+	if len(diff.Updated[0].ChangedFields) != len(diff.Updated[0].FieldChanges) {
+		t.Errorf("changed fields %v and field changes %+v disagree",
+			diff.Updated[0].ChangedFields, diff.Updated[0].FieldChanges)
+	}
+}
+
+func TestDisplayValue(t *testing.T) {
+	long := strings.Repeat("x", displayValueMaxLen+1)
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{"number", float64(600), "600"},
+		{"fraction", 1.5, "1.5"},
+		{"bool", true, "true"},
+		{"short string", "tracker_1", "tracker_1"},
+		{"empty string", "", "empty"},
+		{"long string", long, ""},
+		{"string list", []any{"a.com", "b.net"}, "a.com, b.net"},
+		{"empty list", []any{}, "empty"},
+		{"long list", []any{long}, ""},
+		{"list of objects", []any{map[string]any{"a": 1}}, ""},
+		{"object", map[string]any{"a": 1}, ""},
+		{"null", nil, "none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := displayValue(tc.in); got != tc.want {
+				t.Errorf("displayValue(%v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

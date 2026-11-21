@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.6-dev
+
+### Added
+
+- **The Publish preview says what a value was and what it became.** A row that changed used to name the fields, such as "(sortOrder)". It now shows the values too, "(sortOrder 3 → 5)", with the full list on hover when a rule changed in several places. Nested blocks like conditions are still named without values, because a condition tree does not fit on one line.
+
 ## v0.6.5-dev
 
 ### Changed

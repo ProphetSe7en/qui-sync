@@ -2529,6 +2529,40 @@ function quiSyncApp() {
       return out;
     },
 
+    // changedFieldsLabel renders the fields that differ for an updated
+    // rule, with their values when the backend could show them short:
+    // "(sortOrder 3 → 5, conditions)". Falls back to the plain field
+    // names from an older build that does not send field_changes.
+    changedFieldsLabel(e) {
+      const changes = (e && e.field_changes) || [];
+      if (changes.length) {
+        return '(' + changes.map((c) => this.fieldChangeText(c)).join(', ') + ')';
+      }
+      const names = (e && e.changed_fields) || [];
+      return names.length ? '(' + names.join(', ') + ')' : '';
+    },
+
+    // fieldChangeText is one field: the name alone when there is nothing
+    // short to show, otherwise old → new (or just the value when the
+    // field was added or removed).
+    fieldChangeText(c) {
+      if (!c) return '';
+      const from = c.old || '';
+      const to = c.new || '';
+      if (from && to) return `${c.field} ${from} → ${to}`;
+      if (to) return `${c.field} ${to}`;
+      if (from) return `${c.field} ${from}`;
+      return c.field;
+    },
+
+    // changedFieldsTitle is the hover text, one field per line, so a long
+    // list stays readable when the inline label is cramped.
+    changedFieldsTitle(e) {
+      const changes = (e && e.field_changes) || [];
+      if (!changes.length) return '';
+      return changes.map((c) => this.fieldChangeText(c)).join('\n');
+    },
+
     isExcludedFromExport(e) {
       return this.excludedFromExport.has(this.ruleKey(e));
     },

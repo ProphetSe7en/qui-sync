@@ -19,7 +19,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # The latest patch of the Go line the image builds on, not the
+          # go.mod directive: that names the oldest version that can build
+          # qui-sync, and scanning against it reports every standard-library
+          # fix released since. Keep in step with the Dockerfile builder.
+          go-version: '1.27'
           cache-dependency-path: go.sum
       - name: vet
         run: go vet ./...
@@ -39,7 +43,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # The latest patch of the Go line the image builds on, not the
+          # go.mod directive: that names the oldest version that can build
+          # qui-sync, and scanning against it reports every standard-library
+          # fix released since. Keep in step with the Dockerfile builder.
+          go-version: '1.27'
           cache-dependency-path: go.sum
       - name: install govulncheck
         # Pinned deliberately. govulncheck@latest may need a newer Go
@@ -67,7 +75,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version-file: go.mod
+          # The latest patch of the Go line the image builds on, not the
+          # go.mod directive: that names the oldest version that can build
+          # qui-sync, and scanning against it reports every standard-library
+          # fix released since. Keep in step with the Dockerfile builder.
+          go-version: '1.27'
           cache-dependency-path: go.sum
       - name: install gosec
         # Pinned. Dependabot does not track it, so we audit and bump it

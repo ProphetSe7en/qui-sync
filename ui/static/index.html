@@ -416,9 +416,10 @@
                            title="Include this change in the next Commit export">
                     <span class="diff-row-content">
                       <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
-                      <span x-show="e.changed_fields && e.changed_fields.length"
+                      <span x-show="changedFieldsLabel(e)"
                             class="dim" style="font-size:var(--font-xs); margin-left:6px"
-                            x-text="'(' + (e.changed_fields || []).join(', ') + ')'"></span>
+                            x-text="changedFieldsLabel(e)"
+                            :title="changedFieldsTitle(e)"></span>
                     </span>
                     <button type="button" class="diff-comment-btn"
                             :class="{'has-comment': hasExportComment(e)}"
