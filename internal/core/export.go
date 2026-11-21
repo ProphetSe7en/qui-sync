@@ -120,6 +120,14 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 	diff := &ExportDiff{}
 	// Track which (instance, ruleID) we saw this run so we can detect removals.
 	seen := map[int]map[int]bool{}
+	// Files a live rule writes (or keeps) this run, and the slug it writes
+	// there. The removal scan must never archive one of these: a file is
+	// named after the rule, so a rule recreated in Qui under an old rule's
+	// name resolves to the same path, and archiving it would move the
+	// active rule out of the repo. The slug is kept so the scan can tell
+	// "the same rule under a new id" (nothing to report) from "a different
+	// rule now owns this file" (a removal the user has to be told about).
+	claimed := map[string]string{}
 
 	for _, inst := range cfg.ExportInstances {
 		if err := ctx.Err(); err != nil {
@@ -138,6 +146,11 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 			return nil, fmt.Errorf("list automations (instance %d): %w", inst.QuiInstanceID, err)
 		}
 
+		// State entries whose rule is gone from Qui, keyed by name. A rule
+		// deleted and created again in Qui comes back with a new id, and
+		// without this it would look like one rule removed plus one added.
+		recreatable := orphanEntriesByName(state, inst, rules)
+
 		for _, r := range rules {
 			// Excluded rules are invisible to qui-sync: skip entirely, don't
 			// add to seen (so removal detection also skips them).
@@ -147,9 +160,17 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 			// Per-rule include filter (user deselected this row in the
 			// Publish preview). Mark as seen so the removal scan doesn't
 			// archive the file — the rule is still in Qui, the user just
-			// chose not to push the change this round.
+			// chose not to push the change this round. Claim the path as
+			// well: the include list is built from the previous preview, so
+			// a rule recreated since then can be filtered out while a dead
+			// entry still points at the file it owns.
 			if !opts.isIncluded(inst.QuiInstanceID, r.ID) {
 				seen[inst.QuiInstanceID][r.ID] = true
+				if skipped, found := state.Lookup(inst.QuiInstanceID, r.ID); found {
+					claimed[filepath.Join(paths.Repo, inst.Category, RuleFilename(r.Name)+".json")] = skipped.Slug
+				} else {
+					claimed[filepath.Join(paths.Repo, inst.Category, RuleFilename(r.Name)+".json")] = ""
+				}
 				continue
 			}
 			seen[inst.QuiInstanceID][r.ID] = true
@@ -179,6 +200,39 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 						InstanceID: inst.QuiInstanceID, Comment: ruleComment,
 					})
 				}
+			} else if old, oldID := recreatedFrom(state, inst, recreatable, r); old != nil {
+				// Same file, same category, and the rule that used to own
+				// that file is no longer in Qui: this is the old rule made
+				// again, so it inherits the slug instead of becoming
+				// "<slug>-2" while the original is archived. Forgetting the
+				// dead id here also keeps the removal scan away from the
+				// file, which both rules resolve to.
+				slug = old.Slug
+				entry = old
+				delete(recreatable, RuleFilename(r.Name))
+				if old.LastName != r.Name {
+					// Same file on disk, different text in the name, e.g.
+					// a colon typed back differently. Report it rather than
+					// letting the name change through unannounced.
+					diff.Renamed = append(diff.Renamed, DiffEntry{
+						Slug: slug, Category: inst.Category,
+						Name: r.Name, OldName: old.LastName, QuiID: r.ID,
+						InstanceID: inst.QuiInstanceID, Comment: ruleComment,
+					})
+				}
+				// Re-key in one step. Writing the new id immediately matters
+				// because a recreated rule whose content is unchanged takes
+				// an early exit below, and dropping the old id without
+				// recording the new one would leave the rule untracked.
+				// The sort-order override belongs to the rule, not to the id
+				// Qui happened to give it, so it moves across too.
+				if override, hasOverride := state.SortOrderOverride(inst.QuiInstanceID, oldID); hasOverride {
+					state.SetSortOrderOverride(inst.QuiInstanceID, r.ID, override)
+					state.ClearSortOrderOverride(inst.QuiInstanceID, oldID)
+				}
+				state.Forget(inst.QuiInstanceID, oldID)
+				state.Assign(inst.QuiInstanceID, r.ID, slug, r.Name, inst.Category)
+				stateDirty = true
 			} else {
 				taken := state.AllSlugsInInstance(inst.QuiInstanceID)
 				slug = UniqueSlug(r.Name, taken)
@@ -197,6 +251,7 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 			}
 
 			path := filepath.Join(paths.Repo, inst.Category, RuleFilename(r.Name)+".json")
+			claimed[path] = slug
 			renamed := entry != nil && entry.LastName != r.Name
 			oldPath := ""
 			if oldCategory != "" && oldCategory != inst.Category {
@@ -272,16 +327,28 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 				// archive lookup uses entry.LastName + entry.Category so a
 				// rule renamed-while-archived still gets its old archive
 				// entry cleaned up correctly.
+				staleArchives := []string{
+					// The file this rule writes now. Covers the plain case
+					// of a rule archived by an earlier export and created
+					// again later, where state no longer has the old entry
+					// at all, so the repo would otherwise keep the rule in
+					// both its category folder and archive/.
+					filepath.Join(paths.Repo, "archive", inst.Category, RuleFilename(r.Name)+".json"),
+				}
 				if entry != nil && entry.LastName != "" {
 					archiveCategory := inst.Category
 					if entry.Category != "" {
 						archiveCategory = entry.Category
 					}
-					archivePath := filepath.Join(paths.Repo, "archive", archiveCategory, RuleFilename(entry.LastName)+".json")
-					if _, err := os.Stat(archivePath); err == nil {
-						if err := os.Remove(archivePath); err != nil {
-							return nil, fmt.Errorf("remove stale archive on re-activation: %w", err)
-						}
+					staleArchives = append(staleArchives,
+						filepath.Join(paths.Repo, "archive", archiveCategory, RuleFilename(entry.LastName)+".json"))
+				}
+				for _, archivePath := range staleArchives {
+					if _, err := os.Stat(archivePath); err != nil {
+						continue
+					}
+					if err := os.Remove(archivePath); err != nil {
+						return nil, fmt.Errorf("remove stale archive on re-activation: %w", err)
 					}
 				}
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -343,6 +410,29 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 			// keeps it so the slug + last-known-name survive an un-exclude.
 			excluded := state.IsExcluded(inst.QuiInstanceID, quiID)
 			path := filepath.Join(paths.Repo, entry.Category, RuleFilename(entry.LastName)+".json")
+			// A live rule writes this exact file. The file belongs to the
+			// rule that is still in Qui, so it stays where it is and is
+			// never archived. Whether anything is reported depends on who
+			// took it over: the same slug means the rule simply came back
+			// under a new id, while a different slug means this rule's
+			// published file is gone and the user has to hear about it.
+			if liveSlug, taken := claimed[path]; taken {
+				// An empty slug means the live rule was filtered out of this
+				// run before one was resolved, so the file is untouched and
+				// there is nothing to announce.
+				if liveSlug != "" && liveSlug != entry.Slug {
+					diff.Removed = append(diff.Removed, DiffEntry{
+						Slug: entry.Slug, Category: entry.Category, Name: entry.LastName, QuiID: quiID,
+						InstanceID: inst.QuiInstanceID,
+						Comment:    opts.Comments[ruleKey(inst.QuiInstanceID, quiID)],
+					})
+				}
+				if !excluded && !dryRun {
+					state.Forget(inst.QuiInstanceID, quiID)
+					removalsDirty = true
+				}
+				continue
+			}
 			fileExists := false
 			if _, err := os.Stat(path); err == nil {
 				fileExists = true
@@ -380,9 +470,8 @@ func RunExport(ctx context.Context, cfg *Config, client *QuiClient, opts ExportO
 					// stays visible on GitHub.
 					//
 					// If a rule with the same name has already been
-					// archived before (rare — user-confirmed "probably
-					// not, archived rules don't come back"), rename
-					// the existing archive with a timestamp suffix so
+					// archived before, which is rare, rename the
+					// existing archive with a timestamp suffix so
 					// the previous version is not silently destroyed.
 					// git history on the remote still holds earlier
 					// committed versions, but this protects the case
@@ -611,6 +700,62 @@ func backupFile(src, backupsDir string) error {
 		return err
 	}
 	return os.WriteFile(dst, data, 0o644)
+}
+
+// orphanEntriesByName returns, per rule file, the state entry for this
+// instance whose rule id Qui no longer serves. Used to recognise a rule
+// that was deleted and created again, so it keeps its slug and its file
+// instead of being archived and re-added under a "-2" slug.
+//
+// The key is the file name a rule resolves to rather than the rule name,
+// because the file is what the two halves of an export collide on. Names
+// that differ only in characters RuleFilename strips therefore still match.
+//
+// Deliberately conservative: rules the user excluded keep their state and
+// their reserved slug, entries recorded under a different category (or
+// under none, which legacy state has) belong to another path, and a file
+// that matches more than one dead entry is dropped rather than guessed at.
+func orphanEntriesByName(state *MaintainerState, inst ExportInstance, rules []Automation) map[string]int {
+	live := make(map[int]bool, len(rules))
+	for _, r := range rules {
+		live[r.ID] = true
+	}
+	found := map[string][]int{}
+	for _, quiID := range state.SortedRuleIDs(inst.QuiInstanceID) {
+		if live[quiID] || state.IsExcluded(inst.QuiInstanceID, quiID) {
+			continue
+		}
+		entry, _ := state.Lookup(inst.QuiInstanceID, quiID)
+		if entry == nil || entry.LastName == "" || entry.Slug == "" {
+			continue
+		}
+		if entry.Category != inst.Category {
+			continue
+		}
+		key := RuleFilename(entry.LastName)
+		found[key] = append(found[key], quiID)
+	}
+	out := make(map[string]int, len(found))
+	for key, ids := range found {
+		if len(ids) == 1 {
+			out[key] = ids[0]
+		}
+	}
+	return out
+}
+
+// recreatedFrom resolves the dead state entry a rule is the recreation of,
+// or nil when there is none.
+func recreatedFrom(state *MaintainerState, inst ExportInstance, recreatable map[string]int, r Automation) (*RuleStateEntry, int) {
+	oldID, ok := recreatable[RuleFilename(r.Name)]
+	if !ok {
+		return nil, 0
+	}
+	old, found := state.Lookup(inst.QuiInstanceID, oldID)
+	if !found || old == nil {
+		return nil, 0
+	}
+	return old, oldID
 }
 
 // CleanBackups deletes backup files older than retentionDays.

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.6.5-dev
+
+### Changed
+
+- **Commit messages say what the export did.** An export that mixes kinds used to be summarised as "44 changes", which is all GitHub shows in a file list. It now reads "41 updated, 2 added, 1 archived". Exports of a single kind, and single-rule exports that name the rule, are unchanged.
+
+### Fixed
+
+- **A rule you delete and create again in Qui keeps its place.** Qui gives a recreated rule a new internal id, and Publish used to read that as two separate things: one rule added under a "-2" name, and the original rule removed. Because a rule's file is named after the rule, the archive step then moved the file out of the repository and the rule was left with no file at all. Publish now recognises the rule by its name and folder, so it keeps its original name, stays in place, and shows up as a normal update. If you already committed an export where this happened, the next one puts the file back and removes the leftover copy from `archive/`.
+
+## v0.6.4-dev
+
+### Security
+
+- **Built on current, supported versions.** qui-sync now builds with Go 1.27 instead of Go 1.24, which no longer receives security fixes, and runs on Alpine 3.24 instead of Alpine 3.21, which reached end of life on 2026-11-01. This picks up fixes for known issues in Go's HTML templates, TLS and HTTP handling. The `golang.org/x/crypto` library is updated to v0.58.0.
+- **Verified download.** The bundled cronstrue library is checked against a fixed checksum during the build.
+
 ## v0.6.3-dev
 
 ### Changed

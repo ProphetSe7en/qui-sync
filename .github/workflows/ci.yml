@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go test -race
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: vet
+        run: go vet ./...
+      - name: test with race detector
+        run: go test -race -count=1 ./...
+
+  # govulncheck — scans the dependency tree against Go's official
+  # vulnerability database. Only vulnerabilities in code we actually
+  # reach fail the build, so an unused package in a required module
+  # does not block a release.
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: install govulncheck
+        # Pinned deliberately. govulncheck@latest may need a newer Go
+        # than go.mod declares, and a pin older than the Go release
+        # fails on x/tools skew. Bump this together with the go.mod
+        # toolchain and the Dockerfile builder image, never on its own.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
+      - name: scan
+        run: govulncheck ./...
+
+  # gosec — static analysis for the usual Go security mistakes
+  # (hardcoded credentials, weak crypto, unchecked errors that hide a
+  # security problem). govulncheck catches known-bad dependencies;
+  # gosec catches questionable patterns in our own code.
+  #
+  # -severity high: only high-severity findings fail the build, which
+  # was a clean baseline when this job was added. Medium and low are
+  # mostly stylistic on Go code.
+  gosec:
+    name: gosec
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: install gosec
+        # Pinned. Dependabot does not track it, so we audit and bump it
+        # explicitly rather than letting a compromised release land.
+        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+      - name: scan
+        run: gosec -severity high -quiet -fmt=text ./...

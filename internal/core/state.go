@@ -11,7 +11,9 @@ import (
 )
 
 // MaintainerState maps Qui instance IDs and rule IDs to stable slugs.
-// Lives at <repo_dir>/.qui-sync/maintainer.state.json.
+// Lives at <state_dir>/maintainer.state.json, which Config.Paths puts
+// next to the share repository rather than inside it: with the default
+// /data/repo as the repository, the file is /data/state/maintainer.state.json.
 //
 // All public methods are safe for concurrent use. The CLI is single-threaded
 // so the mutex is a no-op cost, but the HTTP server has overlapping requests

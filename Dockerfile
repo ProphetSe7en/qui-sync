@@ -3,7 +3,7 @@
 # PUID/PGID/UMASK env vars honoured by the entrypoint so host-owned files
 # don't end up root-owned.
 
-FROM golang:1.24-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /src
 
@@ -18,14 +18,17 @@ RUN go mod download
 
 COPY . .
 
+# The checksum matches dist/cronstrue.min.js in the npm tarball for 2.50.0, so a
+# tampered CDN copy fails the build instead of shipping.
 RUN wget -q -O ui/static/js/cronstrue.min.js \
-    "https://cdn.jsdelivr.net/npm/cronstrue@2.50.0/dist/cronstrue.min.js"
+    "https://cdn.jsdelivr.net/npm/cronstrue@2.50.0/dist/cronstrue.min.js" && \
+    echo "970ae0daaa81c0e9bfcfb912f5d18b8f38066275c8133f447e0f79ecfb1d3a7e  ui/static/js/cronstrue.min.js" | sha256sum -c -
 
 RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /out/qui-sync-server ./cmd/server
 
 # -----------------------------------------------------------------------------
 
-FROM alpine:3.21
+FROM alpine:3.24
 
 # Runtime deps: ca-certificates (HTTPS to Qui), git (for sync subscriptions),
 # tzdata (timestamps in changelog), su-exec (drop privileges in entrypoint).

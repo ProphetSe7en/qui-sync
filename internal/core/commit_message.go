@@ -75,7 +75,24 @@ func buildCommitSubject(diff *ExportDiff) string {
 		return fmt.Sprintf("qui-sync export — moved %d rule%s", len(diff.Moved), plural(len(diff.Moved)))
 	}
 
-	return fmt.Sprintf("qui-sync export — %d changes", total)
+	// Mixed kinds: name the mix. A bare total tells the reader nothing in
+	// GitHub's file list, where the subject is all that is shown.
+	parts := make([]string, 0, 5)
+	for _, k := range []struct {
+		n    int
+		verb string
+	}{
+		{len(diff.Updated), "updated"},
+		{len(diff.Added), "added"},
+		{len(diff.Renamed), "renamed"},
+		{len(diff.Moved), "moved"},
+		{len(diff.Removed), "archived"},
+	} {
+		if k.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", k.n, k.verb))
+		}
+	}
+	return fmt.Sprintf("qui-sync export — %s", strings.Join(parts, ", "))
 }
 
 // allInOne reports whether every diff entry sits in a single named bucket.

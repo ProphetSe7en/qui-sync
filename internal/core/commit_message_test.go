@@ -59,7 +59,7 @@ func TestBuildExportCommitMessageMixed(t *testing.T) {
 		Updated: []DiffEntry{{Slug: "b", Category: "movies", Name: "Bravo"}},
 	}
 	got := BuildExportCommitMessage(diff)
-	if !strings.HasPrefix(got, "qui-sync export — 2 changes\n") {
+	if !strings.HasPrefix(got, "qui-sync export — 1 updated, 1 added\n") {
 		t.Fatalf("mixed subject: got %q", got)
 	}
 	if !strings.Contains(got, "Added:\n- movies/Alpha") {
@@ -67,6 +67,23 @@ func TestBuildExportCommitMessageMixed(t *testing.T) {
 	}
 	if !strings.Contains(got, "Updated:\n- movies/Bravo") {
 		t.Fatalf("body missing Updated: %q", got)
+	}
+}
+
+// A large mixed export is the case GitHub's file list shows worst: the
+// subject is the only text there, so it has to carry the shape of the
+// change rather than a bare total.
+func TestBuildExportCommitMessageLargeMixedNamesTheMix(t *testing.T) {
+	diff := &ExportDiff{}
+	for i := 0; i < 41; i++ {
+		diff.Updated = append(diff.Updated, DiffEntry{Slug: "u", Category: "series", Name: "Updated rule"})
+	}
+	diff.Added = append(diff.Added, DiffEntry{Slug: "a", Category: "series", Name: "New rule"})
+	diff.Removed = append(diff.Removed, DiffEntry{Slug: "r", Category: "series", Name: "Gone rule"})
+
+	got := BuildExportCommitMessage(diff)
+	if !strings.HasPrefix(got, "qui-sync export — 41 updated, 1 added, 1 archived\n") {
+		t.Fatalf("large mixed subject: got %q", strings.SplitN(got, "\n", 2)[0])
 	}
 }
 
