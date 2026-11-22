@@ -164,6 +164,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/excludes/instance", s.handleSetInstanceExclude)
 	mux.HandleFunc("PUT /api/instances/{id}/category", s.handleRenameCategory)
 	mux.HandleFunc("PUT /api/sort-order", s.handleSetSortOrder)
+	mux.HandleFunc("POST /api/sort-order/reset", s.handleResetSortOrders)
 
 	// Sync (consumer-mode) — v0.2 MVP.
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubscriptions)

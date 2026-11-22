@@ -267,6 +267,12 @@
                   <div class="rule-toolbar">
                     <button class="btn" @click="includeAll(i.qui_instance_id)">Include all</button>
                     <button class="btn" @click="excludeAll(i.qui_instance_id)">Exclude all</button>
+                    <button class="btn"
+                            x-show="overriddenRules(i.qui_instance_id).length"
+                            @click="resetAllSortOrders(i.qui_instance_id)"
+                            :title="overriddenRules(i.qui_instance_id).length + ' rule(s) use an order set here instead of Qui\'s'">
+                      Use Qui's order
+                    </button>
                     <span class="dim" style="margin-left:auto; font-size:var(--font-xs)">
                       Toggle excludes any rule from export. Excluded rules stay in Qui but never reach the repo.
                     </span>

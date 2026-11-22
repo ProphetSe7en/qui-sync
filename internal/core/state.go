@@ -309,6 +309,21 @@ func (s *MaintainerState) SetSortOrderOverride(quiInstanceID, quiRuleID, value i
 
 // ClearSortOrderOverride removes a custom sortOrder so Qui's value
 // flows through at export time.
+// ClearSortOrderOverridesForInstance drops every manual sort order on an
+// instance, so its rules follow Qui's order again. Returns how many were
+// removed, which is what the caller reports back to the user.
+func (s *MaintainerState) ClearSortOrderOverridesForInstance(quiInstanceID int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	instKey := strconv.Itoa(quiInstanceID)
+	n := len(s.SortOrderOverrides[instKey])
+	if n == 0 {
+		return 0
+	}
+	delete(s.SortOrderOverrides, instKey)
+	return n
+}
+
 func (s *MaintainerState) ClearSortOrderOverride(quiInstanceID, quiRuleID int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

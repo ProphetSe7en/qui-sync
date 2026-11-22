@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.7-dev
+
+### Added
+
+- **Put an instance back on Qui's order.** Setting a rule's priority by hand pins it, so moving that rule around in Qui no longer changes where it lands in your repository. The per-rule reset button undoes one at a time; a new "Use Qui's order" button on the rules toolbar clears them all for an instance. It only appears when something is pinned, and it lists what will change before anything happens.
+
 ## v0.6.6-dev
 
 ### Added

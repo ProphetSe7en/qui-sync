@@ -666,6 +666,39 @@ func (s *Server) handleSetSortOrder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, resp)
 }
 
+type resetSortOrdersReq struct {
+	InstanceID int `json:"instance_id"`
+}
+
+// handleResetSortOrders drops every manual sort order on one instance.
+// The per-rule reset button clears one at a time; this is the way back
+// when a whole instance has drifted from the order kept in Qui.
+func (s *Server) handleResetSortOrders(w http.ResponseWriter, r *http.Request) {
+	var req resetSortOrdersReq
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1024)).Decode(&req); err != nil {
+		writeErr(w, 400, err)
+		return
+	}
+	if req.InstanceID == 0 {
+		writeErr(w, 400, fmt.Errorf("instance_id is required"))
+		return
+	}
+	cfg := s.getConfig()
+	state, err := core.LoadMaintainerState(cfg.Paths().State)
+	if err != nil {
+		writeErr(w, 500, err)
+		return
+	}
+	cleared := state.ClearSortOrderOverridesForInstance(req.InstanceID)
+	if cleared > 0 {
+		if err := state.Save(cfg.Paths().State); err != nil {
+			writeErr(w, 500, err)
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"instance_id": req.InstanceID, "cleared": cleared})
+}
+
 type instanceExcludeReq struct {
 	InstanceID int  `json:"instance_id"`
 	Excluded   bool `json:"excluded"`

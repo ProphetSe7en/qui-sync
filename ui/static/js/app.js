@@ -427,6 +427,45 @@ function quiSyncApp() {
       }
     },
 
+    // overriddenRules lists the rules on an instance whose order you set
+    // by hand. Those are the ones that stop following Qui, which is the
+    // usual reason a repository's order and Qui's disagree.
+    overriddenRules(instanceId) {
+      return (this.rulesByInstance[instanceId] || []).filter((r) => r.has_sort_override);
+    },
+
+    async resetAllSortOrders(instanceId) {
+      const affected = this.overriddenRules(instanceId);
+      if (!affected.length) return;
+      const list = affected
+        .map((r) => `• ${r.name}: ${r.sort_order} → ${r.qui_sort_order}`)
+        .join('\n');
+      const ok = await this.confirm({
+        title: 'Follow Qui\'s order again?',
+        body: `${affected.length} rule${affected.length === 1 ? '' : 's'} on this instance use an order you set here instead of the one in Qui. ` +
+              `Clearing them means the order in your repository follows Qui from now on.\n\n${list}`,
+        confirmLabel: 'Use Qui\'s order',
+      });
+      if (!ok) return;
+      try {
+        const r = await this.apiFetch('/api/sort-order/reset', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ instance_id: instanceId }),
+        });
+        for (const rule of affected) {
+          rule.sort_order = rule.qui_sort_order;
+          rule.has_sort_override = false;
+        }
+        this.rulesByInstance[instanceId] = [...this.rulesByInstance[instanceId]]
+          .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name));
+        const n = (r && r.cleared) || affected.length;
+        this.toast('success', `${n} rule${n === 1 ? '' : 's'} now follow Qui's order.`);
+      } catch (e) {
+        this.toast('error', 'Reset failed: ' + e.message);
+      }
+    },
+
     async toggleExclude(instanceId, rule) {
       const excluded = !rule.excluded;
       try {
