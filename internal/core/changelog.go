@@ -25,9 +25,12 @@ const changelogHeader = "# Changelog\n\nAll notable changes to this automations 
 // pushed today" instead of "only the last batch I pushed today".
 //
 // Merge semantics:
-//   - Bullets are keyed by (group, slug). Same-slug entries: later wins
-//     (the new bullet replaces the old one, including its comment).
-//     Different-slug entries are added to the group.
+//   - Bullets are keyed by (group, slug, category). A later entry for the
+//     same rule wins, replacing the old bullet including its comment;
+//     any other entry is added to the group. The category belongs in the
+//     key because a slug is only unique within its own folder: the same
+//     rule name in movies/ and series/ yields one slug, and keying on it
+//     alone made one of them overwrite the other.
 //   - Groups present in the existing section survive even when the fresh
 //     diff has nothing in them.
 //   - The global note: a fresh non-empty note replaces the existing one;
@@ -293,10 +296,11 @@ func writeCommentSuffix(sb *strings.Builder, comment string) {
 // ordering on disk stays stable as much as possible.
 
 type parsedBullet struct {
-	// slug is the key inside the first backticks of a "- `slug` ..."
-	// line. Empty when the bullet cannot be parsed — in that case the
-	// raw line is preserved verbatim and excluded from upsert matching.
-	slug string
+	// key identifies the rule a bullet is about: its slug and the
+	// category it lives in. Empty when the bullet cannot be parsed — in
+	// that case the raw line is preserved verbatim and excluded from
+	// upsert matching.
+	key string
 	// line is the bullet's full text, including the leading "- "
 	// marker and any trailing comment suffix, no newline.
 	line string
@@ -316,10 +320,29 @@ type parsedSection struct {
 	groupIndex map[string]int // heading -> index into groups
 }
 
-// bulletRe captures the slug between the first pair of backticks on a
-// "- " line. Hand-edited bullets that don't follow this exact shape
-// get preserved verbatim with slug=="".
-var bulletRe = regexp.MustCompile("^- `([^`]+)`")
+// bulletRe captures what identifies a bullet: the slug between the
+// first pair of backticks on a "- " line, and the category in the
+// parentheses that follow it. Hand-edited bullets that don't follow
+// this shape get preserved verbatim with key=="".
+//
+// The category is part of the identity because a slug is only unique
+// within its category: a rule named the same way in movies/ and
+// series/ produces the same slug, and matching on the slug alone made
+// one category's entry overwrite the other's on a same-day merge.
+// The category group is optional so bullets written before it was
+// parsed still match each other on the slug.
+var bulletRe = regexp.MustCompile("^- `([^`]+)`(?: \\(([^)]*)\\))?")
+
+// bulletKey is a bullet's identity: the rule's slug within its
+// category. An empty category keeps the slug alone as the key, so
+// bullets from a file written before categories were parsed still
+// match each other.
+func bulletKey(slug, category string) string {
+	if category == "" {
+		return slug
+	}
+	return slug + "\x00" + category
+}
 
 // parseSection breaks a "## DATE\n..." block into structured form so
 // it can be merged with a freshly rendered section. The input must
@@ -384,8 +407,8 @@ func parseSection(s string) parsedSection {
 			continue
 		}
 		b := parsedBullet{line: line}
-		if m := bulletRe.FindStringSubmatch(line); len(m) == 2 {
-			b.slug = m[1]
+		if m := bulletRe.FindStringSubmatch(line); len(m) == 3 {
+			b.key = bulletKey(m[1], m[2])
 		}
 		current.bullets = append(current.bullets, b)
 	}
@@ -460,18 +483,18 @@ func mergeSameDaySections(existing, fresh string) string {
 		// entries within one Commit.
 		for i := len(fg.bullets) - 1; i >= 0; i-- {
 			fb := fg.bullets[i]
-			if fb.slug == "" {
+			if fb.key == "" {
 				// Unparseable bullet from the fresh side. Prepend so
 				// it still surfaces at the top. Rare in practice since
 				// renderSection's output is always parseable.
 				target.bullets = append([]parsedBullet{fb}, target.bullets...)
 				continue
 			}
-			// Drop any existing entry for this slug — the new one
+			// Drop any existing entry for this rule — the new one
 			// will replace it at the top.
 			filtered := target.bullets[:0]
 			for _, b := range target.bullets {
-				if b.slug != fb.slug {
+				if b.key != fb.key {
 					filtered = append(filtered, b)
 				}
 			}

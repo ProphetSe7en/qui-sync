@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.6.10-dev
+
+### Fixed
+
+- **The changelog no longer drops a folder's rules.** When one export changed the same rule in two folders, say `movies/Delete: noHL Tier 1` and `series/Delete: noHL Tier 1`, a second export on the same day kept only one of them in that day's section. Entries were matched on the rule name alone, and a name is only unique inside its folder, so one folder's line replaced the other's. Both are kept now. Previous days were never affected, and the rule files themselves were always correct.
+
+### Changed
+
+- **Your note becomes the commit message.** When you write a note for an export, it is now the commit's first line, so your repository history reads in your words instead of "updated 6 rules". The generated summary and the list of rules move into the commit body, and a long note is shortened on the first line with the full text kept underneath. Exports without a note are unchanged.
+
 ## v0.6.9-dev
 
 ### Changed

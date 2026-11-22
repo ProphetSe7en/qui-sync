@@ -417,3 +417,46 @@ func TestAppendChangelogSameDayHeadingWithSuffix(t *testing.T) {
 		t.Errorf("must end with a single section for that date:\n%s", got)
 	}
 }
+
+// A slug is only unique inside its category: the same rule name in
+// movies/ and series/ produces one slug. Merging a second export on the
+// same day used to key on the slug alone, so the entry for one category
+// silently replaced the other's and a whole folder's changes vanished
+// from the day's section.
+func TestAppendChangelogSameDayKeepsBothCategories(t *testing.T) {
+	dir := t.TempDir()
+	when := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+
+	first := &ExportDiff{Updated: []DiffEntry{
+		{Slug: "delete-nohl-tier1", Category: "movies", Name: "Delete: noHL Tier 1"},
+		{Slug: "delete-nohl-tier1", Category: "series", Name: "Delete: noHL Tier 1"},
+		{Slug: "tag-season-pack", Category: "series", Name: "Tag: Season Pack"},
+	}}
+	if err := AppendChangelog(dir, first, when, ""); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	// Second export the same day touches the same rule in both folders.
+	second := &ExportDiff{Updated: []DiffEntry{
+		{Slug: "delete-nohl-tier1", Category: "movies", Name: "Delete: noHL Tier 1", Comment: "switched to seeding time"},
+		{Slug: "delete-nohl-tier1", Category: "series", Name: "Delete: noHL Tier 1", Comment: "switched to seeding time"},
+	}}
+	if err := AppendChangelog(dir, second, when, ""); err != nil {
+		t.Fatalf("second append: %v", err)
+	}
+
+	got := readChangelog(t, dir)
+	for _, want := range []string{
+		"`delete-nohl-tier1` (movies)",
+		"`delete-nohl-tier1` (series)",
+		"`tag-season-pack` (series)",
+	} {
+		if strings.Count(got, want) != 1 {
+			t.Errorf("want exactly one %q, found %d:\n%s", want, strings.Count(got, want), got)
+		}
+	}
+	// Both carry the new comment, so neither was left on its old text.
+	if strings.Count(got, "switched to seeding time") != 2 {
+		t.Errorf("both categories should show the new comment:\n%s", got)
+	}
+}

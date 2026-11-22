@@ -143,3 +143,66 @@ func TestExportOptionsIsIncluded(t *testing.T) {
 		}
 	})
 }
+
+// The note is what the maintainer wrote about why the export happened,
+// so it carries more than a generated count in a commit list. The
+// generated summary still has to survive, in the body.
+func TestBuildExportCommitMessageUsesNoteAsSubject(t *testing.T) {
+	diff := &ExportDiff{Updated: []DiffEntry{
+		{Slug: "delete-nohl-tier1", Category: "series", Name: "Delete: noHL Tier 1"},
+		{Slug: "delete-nohl-tier2", Category: "series", Name: "Delete: noHL Tier 2"},
+	}}
+	note := "Changed the condition from Completion Time to Seeding Time"
+
+	got := BuildExportCommitMessageWithNote(diff, note)
+	subject, body, _ := strings.Cut(got, "\n")
+	if subject != note {
+		t.Errorf("subject = %q, want the note", subject)
+	}
+	if !strings.Contains(body, "qui-sync export — updated 2 rules") {
+		t.Errorf("body should keep the generated summary:\n%s", body)
+	}
+	if !strings.Contains(body, "Updated:\n- series/Delete: noHL Tier 1") {
+		t.Errorf("body should still list the rules:\n%s", body)
+	}
+}
+
+func TestBuildExportCommitMessageWithoutNoteIsUnchanged(t *testing.T) {
+	diff := &ExportDiff{Updated: []DiffEntry{{Slug: "a", Category: "movies", Name: "Alpha"}}}
+	if BuildExportCommitMessageWithNote(diff, "  ") != BuildExportCommitMessage(diff) {
+		t.Error("a blank note must not change the message")
+	}
+}
+
+// A long or multi-line note still has to produce a readable one-line
+// subject, without losing the rest of what was written.
+func TestBuildExportCommitMessageShortensLongNote(t *testing.T) {
+	diff := &ExportDiff{Updated: []DiffEntry{{Slug: "a", Category: "movies", Name: "Alpha"}}}
+	note := "Changed the condition from Completion Time to Seeding Time to prevent torrents from stopping before the preferred 21-day seeding period is reached."
+
+	got := BuildExportCommitMessageWithNote(diff, note)
+	subject, body, _ := strings.Cut(got, "\n")
+	if len([]rune(subject)) > commitSubjectMaxLen {
+		t.Errorf("subject is %d runes, want at most %d: %q", len([]rune(subject)), commitSubjectMaxLen, subject)
+	}
+	if !strings.HasSuffix(subject, "…") {
+		t.Errorf("a shortened subject should say so, got %q", subject)
+	}
+	if !strings.Contains(got, "21-day seeding period is reached.") {
+		t.Errorf("the rest of the note must survive in the body:\n%s", body)
+	}
+}
+
+func TestBuildExportCommitMessageMultilineNote(t *testing.T) {
+	diff := &ExportDiff{Updated: []DiffEntry{{Slug: "a", Category: "movies", Name: "Alpha"}}}
+	note := "Switched to seeding time\n\nTorrents were stopping too early on the 21-day trackers."
+
+	got := BuildExportCommitMessageWithNote(diff, note)
+	subject, _, _ := strings.Cut(got, "\n")
+	if subject != "Switched to seeding time" {
+		t.Errorf("subject = %q, want the note's first line", subject)
+	}
+	if !strings.Contains(got, "Torrents were stopping too early") {
+		t.Errorf("the remaining lines must survive:\n%s", got)
+	}
+}

@@ -918,7 +918,7 @@ func (s *Server) doExport(w http.ResponseWriter, r *http.Request, dryRun bool) {
 	// requiring the user to run git commit manually.
 	gitCommitted := false
 	if !dryRun && !diff.Empty() {
-		msg := core.BuildExportCommitMessage(diff)
+		msg := core.BuildExportCommitMessageWithNote(diff, opts.Note)
 		if err := core.GitCommitExport(r.Context(), cfg.Paths().Repo, msg); err != nil {
 			log.Printf("git commit after export: %v (non-fatal)", err)
 		} else {

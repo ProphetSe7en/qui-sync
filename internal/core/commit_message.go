@@ -23,15 +23,76 @@ import (
 // Moved). When the user attached a per-rule comment it is indented two
 // spaces beneath the bullet so GitHub renders it as a continuation line.
 func BuildExportCommitMessage(diff *ExportDiff) string {
+	return BuildExportCommitMessageWithNote(diff, "")
+}
+
+// BuildExportCommitMessageWithNote is BuildExportCommitMessage with the
+// note from the Export panel. When the maintainer wrote one, it becomes
+// the subject, because a sentence they wrote about why says more in a
+// commit list than a generated count does. The generated summary is not
+// lost: it moves to the first line of the body, above the rule list.
+//
+// Only the first line of the note can be the subject, and it is
+// shortened if it runs long, so the commit keeps a readable one-line
+// summary. The note's full text stays in the body.
+func BuildExportCommitMessageWithNote(diff *ExportDiff, note string) string {
 	if diff == nil || diff.Empty() {
 		return "qui-sync export"
 	}
-	subject := buildCommitSubject(diff)
+	generated := buildCommitSubject(diff)
 	body := buildCommitBody(diff)
-	if body == "" {
-		return subject
+
+	note = strings.TrimSpace(note)
+	if note == "" {
+		if body == "" {
+			return generated
+		}
+		return generated + "\n\n" + body
 	}
-	return subject + "\n\n" + body
+
+	subject := commitSubjectFromNote(note)
+	parts := []string{subject, generated}
+	if rest := noteRemainder(note, subject); rest != "" {
+		parts = append(parts, rest)
+	}
+	if body != "" {
+		parts = append(parts, body)
+	}
+	return parts[0] + "\n\n" + strings.Join(parts[1:], "\n\n")
+}
+
+// commitSubjectMaxLen keeps the subject readable in a commit list. Git
+// convention is around 50 characters and GitHub truncates near 72; this
+// sits at the forgiving end of that range.
+const commitSubjectMaxLen = 72
+
+// commitSubjectFromNote takes the note's first line as the subject,
+// shortened on a word boundary when it is too long.
+func commitSubjectFromNote(note string) string {
+	first := note
+	if i := strings.IndexAny(first, "\r\n"); i >= 0 {
+		first = first[:i]
+	}
+	first = strings.TrimSpace(first)
+	if len([]rune(first)) <= commitSubjectMaxLen {
+		return first
+	}
+	runes := []rune(first)
+	cut := string(runes[:commitSubjectMaxLen-1])
+	if sp := strings.LastIndex(cut, " "); sp > commitSubjectMaxLen/2 {
+		cut = cut[:sp]
+	}
+	return strings.TrimRight(cut, " ,;:-") + "…"
+}
+
+// noteRemainder is whatever of the note the subject did not carry, so a
+// long or multi-line note survives in full inside the body.
+func noteRemainder(note, subject string) string {
+	trimmed := strings.TrimSuffix(subject, "…")
+	if rest := strings.TrimSpace(strings.TrimPrefix(note, trimmed)); rest != "" {
+		return rest
+	}
+	return ""
 }
 
 func buildCommitSubject(diff *ExportDiff) string {
