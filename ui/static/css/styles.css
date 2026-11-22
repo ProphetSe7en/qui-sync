@@ -474,6 +474,14 @@ label { font-size: var(--font-sm); color: var(--text-secondary); }
   font-family: var(--font-mono);
   text-align: right;
 }
+/* Two rules on the same number: the list has to break the tie by name,
+   which is rarely what the person typing the number meant. Shown rather
+   than resolved quietly. */
+.priority-duplicate {
+  border-color: var(--accent-amber);
+  color: var(--accent-amber);
+  background: color-mix(in srgb, var(--accent-amber) 10%, transparent);
+}
 .priority-reset {
   background: none;
   border: none;

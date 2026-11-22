@@ -429,6 +429,45 @@ function quiSyncApp() {
       }
     },
 
+    // Two rules on the same number is ambiguous: the list falls back to
+    // sorting by name, so a number you typed to move a rule up can land
+    // it underneath the rule already sitting there. The number is shown
+    // as a warning rather than quietly resolved.
+    //
+    // Only exported rules count. A number shared with a rule you keep
+    // out of the repository changes nothing about what gets published,
+    // and warning about it would be noise on a list where private rules
+    // sit between shared ones.
+    duplicateSortOrders(instanceId) {
+      const seen = new Map();
+      for (const r of this.rulesByInstance[instanceId] || []) {
+        if (r.excluded) continue;
+        seen.set(r.sort_order, (seen.get(r.sort_order) || 0) + 1);
+      }
+      return new Set([...seen.entries()].filter(([, n]) => n > 1).map(([v]) => v));
+    },
+
+    isDuplicateSortOrder(instanceId, rule) {
+      if (rule.excluded) return false;
+      return this.duplicateSortOrders(instanceId).has(rule.sort_order);
+    },
+
+    // priorityTitle is the hover text on the number: who else is on it
+    // when it is shared, and where the value came from otherwise.
+    priorityTitle(instanceId, rule) {
+      if (this.isDuplicateSortOrder(instanceId, rule)) {
+        const others = (this.rulesByInstance[instanceId] || [])
+          .filter((r) => !r.excluded && r.sort_order === rule.sort_order && r.qui_id !== rule.qui_id)
+          .map((r) => r.name);
+        return `Also on ${rule.sort_order}: ${others.join(', ')}. ` +
+               'Rules sharing a number are ordered by name, so this may not sit where you expect. ' +
+               'Give one of them a different number, or reorder in Qui and use Qui\'s order here.';
+      }
+      return rule.has_sort_override
+        ? `Override. Qui's value is ${rule.qui_sort_order}`
+        : 'From Qui';
+    },
+
     // overriddenRules lists the rules on an instance whose order you set
     // by hand. Those are the ones that stop following Qui, which is the
     // usual reason a repository's order and Qui's disagree.

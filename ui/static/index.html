@@ -298,10 +298,9 @@
                           <td class="priority-cell">
                             <input type="number"
                                    class="input priority-input"
+                                   :class="{'priority-duplicate': isDuplicateSortOrder(i.qui_instance_id, rule)}"
                                    :value="rule.sort_order"
-                                   :title="rule.has_sort_override
-                                     ? 'Override — Qui\'s value is ' + rule.qui_sort_order
-                                     : 'From Qui'"
+                                   :title="priorityTitle(i.qui_instance_id, rule)"
                                    @change="saveSortOrder(i.qui_instance_id, rule, $event.target.value)">
                             <button class="priority-reset"
                                     x-show="rule.has_sort_override"

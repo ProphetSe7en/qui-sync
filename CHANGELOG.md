@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.9-dev
+
+### Changed
+
+- **Two rules on the same priority are flagged instead of quietly resolved.** When a number is shared, the list has to fall back to ordering by name, so a number you typed to move a rule up could land it below the rule already sitting there. Shared numbers now show in amber and say which other rules are on that number. Rules you exclude from export are left out of this, since a number they share changes nothing about what reaches your repository. The reliable way round it stays the same: order your rules in Qui and use "Use Qui's order" here.
+
 ## v0.6.8-dev
 
 ### Added
