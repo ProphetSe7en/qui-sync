@@ -37,6 +37,8 @@ function quiSyncApp() {
     // — and resets after a successful Commit. Default is "everything
     // included, no comments", matching pre-v0.4.1 behaviour.
     excludedFromExport: new Set(),
+    // Rule keys whose nested-field changes are expanded in the preview.
+    expandedChangeDetails: new Set(),
     exportComments: {},
     expandedExportComment: {},
     // After a successful export, stash the submitted note so the user
@@ -2592,6 +2594,39 @@ function quiSyncApp() {
       if (to) return `${c.field} ${to}`;
       if (from) return `${c.field} ${from}`;
       return c.field;
+    },
+
+    // A nested field such as conditions has no one-line form, so the
+    // backend sends a list of what moved inside it. These four helpers
+    // turn that into an expandable row.
+    hasChangeDetails(e) {
+      return this.changeDetailLines(e).length > 0;
+    },
+
+    changeDetailLines(e) {
+      const changes = (e && e.field_changes) || [];
+      const out = [];
+      for (const c of changes) {
+        for (const line of c.details || []) {
+          out.push(`${c.field}: ${line}`);
+        }
+      }
+      return out;
+    },
+
+    showingChangeDetails(e) {
+      return this.expandedChangeDetails.has(this.ruleKey(e));
+    },
+
+    toggleChangeDetails(e) {
+      const key = this.ruleKey(e);
+      if (this.expandedChangeDetails.has(key)) {
+        this.expandedChangeDetails.delete(key);
+      } else {
+        this.expandedChangeDetails.add(key);
+      }
+      // Alpine tracks Set mutations poorly; replace it so the row redraws.
+      this.expandedChangeDetails = new Set(this.expandedChangeDetails);
     },
 
     // changedFieldsTitle is the hover text, one field per line, so a long

@@ -48,6 +48,10 @@ type FieldChange struct {
 	Field string `json:"field"`
 	Old   string `json:"old,omitempty"`
 	New   string `json:"new,omitempty"`
+	// Details describes what moved inside a nested field such as
+	// conditions, one line per difference, for fields that have no
+	// one-line form. Long diffs are capped and the tail summarised.
+	Details []string `json:"details,omitempty"`
 }
 
 // Empty returns true if nothing changed.
@@ -852,7 +856,13 @@ func computeFieldChanges(oldJSON, newJSON []byte) []FieldChange {
 		case oldOk && !newOk:
 			changed = append(changed, FieldChange{Field: "-" + k, Old: displayValue(oldVal)})
 		case !deepEqualJSON(oldVal, newVal):
-			changed = append(changed, FieldChange{Field: k, Old: displayValue(oldVal), New: displayValue(newVal)})
+			c := FieldChange{Field: k, Old: displayValue(oldVal), New: displayValue(newVal)}
+			if c.Old == "" && c.New == "" {
+				// A nested block. Naming it is all the one-line form can
+				// honestly do, so the reader gets the detail instead.
+				c.Details = diffValueLines(oldVal, newVal)
+			}
+			changed = append(changed, c)
 		}
 	}
 	sort.Slice(changed, func(i, j int) bool { return changed[i].Field < changed[j].Field })

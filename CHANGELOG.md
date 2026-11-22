@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.6.8-dev
+
+### Added
+
+- **See what changed inside a rule's conditions.** A changed rule used to list conditions as a field name with nothing behind it. The preview now expands: click the field list on a row and you get a line per difference, written the way the rule reads, such as "conditions added: TAGS EQUAL Tier2", "conditions removed: RATIO GREATER_THAN 2" or "delete.mode: deleteWithFiles → delete". A condition that moved position is not reported, only one whose meaning changed, and a rule rewritten from top to bottom shows the first changes and a count of the rest.
+
 ## v0.6.7-dev
 
 ### Added

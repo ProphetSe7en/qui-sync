@@ -353,6 +353,29 @@ label { font-size: var(--font-sm); color: var(--text-secondary); }
   flex-shrink: 0;
 }
 .diff-comment-btn:hover { border-color: var(--accent-amber); color: var(--accent-amber); }
+/* The changed-fields label becomes a toggle when a nested field such as
+   conditions has detail worth opening. Styled as text, not a button, so
+   the row reads the same as rows without detail. */
+.diff-detail-toggle {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin-left: 6px;
+  cursor: pointer;
+  font-size: var(--font-xs);
+  font-family: inherit;
+  color: var(--text-dim);
+}
+.diff-detail-toggle:hover { color: var(--text); }
+.diff-detail-list {
+  margin: 4px 0 2px 18px;
+  padding: 0;
+  list-style: none;
+  font-size: var(--font-xs);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+}
+.diff-detail-list li { padding: 1px 0; }
 .diff-comment-btn.has-comment {
   border-color: var(--accent-amber);
   color: var(--accent-amber);

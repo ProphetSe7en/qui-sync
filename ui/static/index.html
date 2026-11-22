@@ -422,10 +422,23 @@
                            title="Include this change in the next Commit export">
                     <span class="diff-row-content">
                       <span x-text="e.Category"></span>/<b x-text="e.Slug"></b> — <span x-text="e.Name"></span>
-                      <span x-show="changedFieldsLabel(e)"
+                      <span x-show="changedFieldsLabel(e) && !hasChangeDetails(e)"
                             class="dim" style="font-size:var(--font-xs); margin-left:6px"
                             x-text="changedFieldsLabel(e)"
                             :title="changedFieldsTitle(e)"></span>
+                      <button type="button"
+                              x-show="hasChangeDetails(e)"
+                              class="diff-detail-toggle dim"
+                              @click="toggleChangeDetails(e)"
+                              :title="showingChangeDetails(e) ? 'Hide what changed' : 'Show what changed'">
+                        <span x-text="changedFieldsLabel(e)"></span>
+                        <span x-text="showingChangeDetails(e) ? ' ▾' : ' ▸'"></span>
+                      </button>
+                      <ul x-show="showingChangeDetails(e)" class="diff-detail-list">
+                        <template x-for="line in changeDetailLines(e)" :key="line">
+                          <li x-text="line"></li>
+                        </template>
+                      </ul>
                     </span>
                     <button type="button" class="diff-comment-btn"
                             :class="{'has-comment': hasExportComment(e)}"
